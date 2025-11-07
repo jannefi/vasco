@@ -35,37 +35,31 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: List Python files
-        id: files
-        run: |
-          echo "files<<EOF" >> $GITHUB_OUTPUT
-          git ls-files '*.py' | sed '/^$/d' >> $GITHUB_OUTPUT || true
-          echo "EOF" >> $GITHUB_OUTPUT
-
       - name: Compile all Python files
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
+          files=$(git ls-files '*.py' || true)
+          if [ -z "$files" ]; then
+            echo "No Python files found"; exit 0; fi
           python - <<'PY'
-import os, sys, py_compile, subprocess
-from pathlib import Path
-
-files = subprocess.check_output(['git','ls-files','*.py'], text=True).splitlines()
-errors = []
-for f in files:
-    try:
-        py_compile.compile(f, doraise=True)
-        print(f"OK  {f}")
-    except Exception as e:
-        print(f"ERR {f}: {e}")
-        errors.append((f, str(e)))
-
-if errors:
-    print("
+          import sys, subprocess, py_compile
+          files = subprocess.check_output(['git','ls-files','*.py'], text=True).splitlines()
+          errors = []
+          for f in files:
+              try:
+                  py_compile.compile(f, doraise=True)
+                  print(f"OK  {f}")
+              except Exception as e:
+                  print(f"ERR {f}: {e}")
+                  errors.append((f, str(e)))
+          if errors:
+              print("
 Summary of failures:")
-    for f, e in errors:
-        print(f" - {f}: {e}")
-    sys.exit(1)
-PY
+              for f, e in errors:
+                  print(f" - {f}: {e}")
+              sys.exit(1)
+          PY
 
   lint:
     name: Ruff lint (lightweight)
