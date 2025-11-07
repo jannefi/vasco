@@ -1,0 +1,44 @@
+
+# Configuration for MNRAS 2022 POSS-I Red reproduction (Section 2→3)
+xmatch:
+  radius_arcsec: 5.0
+  ps1:
+    service: mast
+    table: dr2/mean
+  gaia:
+    service: tap
+    table: gaiaedr3.gaia_source
+
+filters:
+  extract:
+    detect_thresh: 5.0
+    snr_win_min: 30.0
+    flags_equal: 0
+  morphology:
+    spread_model_min: -0.002
+    two_fwhm_lt: 7.0
+    elongation_lt: 1.3
+    xy_bounds:
+      xmin: null
+      xmax: null
+      ymin: null
+      ymax: null
+
+spikes:
+  search_radius_arcmin: 35.0
+  rmag_max_catalog: 16.0
+  rules:
+    - type: const
+      max_mag: 12.4
+    - type: line
+      a: -0.09
+      b: 15.3
+
+hpm:
+  search_radius_arcsec: 30
+  use_gaia_space_motion: true
+  poss_epoch_year: 1950.0
+
+outputs:
+  summary_json: REPRO_SUMMARY.json
+  summary_md:   REPRO_SUMMARY.md
