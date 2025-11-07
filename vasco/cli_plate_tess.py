@@ -3,39 +3,30 @@ import argparse, csv, json, math, random
 from pathlib import Path
 from typing import List, Dict, Any, Tuple
 
-# --- geometry helpers ---
-def _deg_to_arcmin(x: float) -> float:
-    return x*60.0
+from .utils.coords import parse_ra, parse_dec
 
+# --- geometry helpers ---
 def _arcmin_to_deg(x: float) -> float:
     return x/60.0
 
-def _tile_grid_centers(ra0: float, dec0: float, size_deg: float, tile_arcmin: int, overlap_arcmin: int) -> List[Tuple[float,float]]:
-    """
-    Build a simple RA/Dec grid over a square footprint centered at (ra0, dec0).
-    Uses a naive small-angle approximation suitable for ~few-degree scales.
-    """
-    # Effective step in arcmin (tile size minus overlap)
-    step_arcmin = max(1, tile_arcmin - overlap_arcmin)
+def _tile_grid_centers(ra0_deg: float, dec0_deg: float, size_deg: float, tile_arcmin: int, overlap_arcmin: int) -> List[Tuple[float,float]]:
+    step_arcmin = max(1, int(tile_arcmin) - int(overlap_arcmin))
     step_deg = _arcmin_to_deg(step_arcmin)
-    half = size_deg/2.0
-    # Number of steps from center in each direction
-    nx = int(math.ceil((size_deg)/step_deg))
-    ny = int(math.ceil((size_deg)/step_deg))
+    half = float(size_deg)/2.0
+    nx = int(math.ceil((float(size_deg))/step_deg))
+    ny = int(math.ceil((float(size_deg))/step_deg))
     ras: List[float] = []
     decs: List[float] = []
     for iy in range(-ny//2, ny//2 + 1):
-        dec = dec0 + iy*step_deg
-        # cos(dec) correction for RA separation
-        cosd = max(0.1, math.cos(math.radians(dec0)))
+        dec = dec0_deg + iy*step_deg
+        cosd = max(0.1, math.cos(math.radians(dec0_deg)))
         ra_step = step_deg / cosd
         for ix in range(-nx//2, nx//2 + 1):
-            ra = ra0 + ix*ra_step
-            # clip roughly to square footprint
-            if abs(ra - ra0) <= half/cosd and abs(dec - dec0) <= half:
+            ra = ra0_deg + ix*ra_step
+            if abs(ra - ra0_deg) <= half/cosd and abs(dec - dec0_deg) <= half:
                 ras.append(ra)
                 decs.append(dec)
-    return list(zip(ras,decs))
+    return list(zip(ras, decs))
 
 # --- sampling ---
 def _sample_positions(positions: List[Tuple[float,float]], fraction: float, seed: int=42) -> List[Tuple[float,float]]:
@@ -46,23 +37,31 @@ def _sample_positions(positions: List[Tuple[float,float]], fraction: float, seed
     return rnd.sample(positions, k)
 
 # --- main API ---
+def _first_present(d: Dict[str, Any], keys: List[str], default=None):
+    for k in keys:
+        if k in d and d[k] not in (None, ''):
+            return d[k]
+    return default
+
 def build_tiles(plates_json: Path, out_csv: Path, *, default_fraction=0.2, seed: int=42) -> int:
     pdata = json.loads(Path(plates_json).read_text(encoding='utf-8'))
     rows: List[Dict[str,Any]] = []
     for p in pdata:
         plate_id = p.get('plate_id','unknown')
-        ra0 = float(p['center_ra_deg'])
-        dec0 = float(p['center_dec_deg'])
+        ra_val  = _first_present(p, ['center_ra_deg','center_ra','ra','center_ra_hms'])
+        dec_val = _first_present(p, ['center_dec_deg','center_dec','dec','center_dec_dms'])
+        if ra_val is None or dec_val is None:
+            raise ValueError(f"Missing center RA/Dec in plate entry: {plate_id}")
+        ra0 = parse_ra(ra_val)
+        dec0 = parse_dec(dec_val)
         size_deg = float(p.get('footprint_deg', 6.5))
         tile_arcmin = int(p.get('tile_size_arcmin', 60))
         overlap_arcmin = int(p.get('tile_overlap_arcmin', 2))
         cov = str(p.get('coverage_mode','sample')).lower()
         frac = float(p.get('sample_fraction', default_fraction))
-        # Build grid
         positions = _tile_grid_centers(ra0, dec0, size_deg, tile_arcmin, overlap_arcmin)
         if cov == 'sample':
             positions = _sample_positions(positions, frac, seed=seed)
-        # Emit rows
         for (ra,dec) in positions:
             rows.append({
                 'plate_id': plate_id,
@@ -71,7 +70,6 @@ def build_tiles(plates_json: Path, out_csv: Path, *, default_fraction=0.2, seed:
                 'size_arcmin': tile_arcmin,
                 'overlap_arcmin': overlap_arcmin
             })
-    # Write CSV
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open('w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=['plate_id','ra_deg','dec_deg','size_arcmin','overlap_arcmin'])
@@ -81,9 +79,6 @@ def build_tiles(plates_json: Path, out_csv: Path, *, default_fraction=0.2, seed:
 
 
 def make_runner_script(tiles_csv: Path, script_path: Path, *, retry_after: int=4):
-    """
-    Emit a shell script that loops over tiles and calls your existing run.sh in --one mode.
-    """
     script = [
         '#!/usr/bin/env bash',
         'set -euo pipefail',
@@ -98,9 +93,8 @@ def make_runner_script(tiles_csv: Path, script_path: Path, *, retry_after: int=4
     script_path.chmod(0o755)
 
 
-# --- CLI ---
 def main(argv=None) -> int:
-    p = argparse.ArgumentParser(prog='vasco.cli_plate_tess', description='Plate-aware tessellation (sample or full cover) for DSS/POSS cutouts')
+    p = argparse.ArgumentParser(prog='vasco.cli_plate_tess', description='Plate-aware tessellation (sample or full cover) for DSS/POSS cutouts; accepts sexagesimal or decimal plate centers.')
     sub = p.add_subparsers(dest='cmd')
 
     b = sub.add_parser('build', help='Build a CSV of tile centers from a plates JSON')

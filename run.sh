@@ -1,4 +1,57 @@
 #!/usr/bin/env bash
+
+set -euo pipefail
+
+# --- Sexagesimal RA/Dec normalization (Bash 3.2 compatible) ---
+# This block rewrites $@ so that --ra/--dec values can be sexagesimal
+# (e.g. 21:02:52.28, +48:34:18.90) or decimal degrees.
+# Requires vasco/utils/coords.py (Astropy Angle) to be importable from $PWD.
+
+export PYTHONPATH="${PYTHONPATH:-}:$(pwd)"
+
+normalize_ra() { python - "$1" <<'PY'
+from vasco.utils.coords import parse_ra
+import sys
+print(f"{parse_ra(sys.argv[1]):.9f}")
+PY
+}
+normalize_dec() { python - "$1" <<'PY'
+from vasco.utils.coords import parse_dec
+import sys
+v = parse_dec(sys.argv[1])
+print(f"{v:+.9f}")
+PY
+}
+
+# Build NEW_ARGS by normalizing --ra/--dec occurrences
+NEW_ARGS=()
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --ra=*)
+      val=${1#--ra=}
+      NEW_ARGS+=("--ra" "$(normalize_ra "$val")")
+      shift ;;
+    --dec=*)
+      val=${1#--dec=}
+      NEW_ARGS+=("--dec" "$(normalize_dec "$val")")
+      shift ;;
+    --ra)
+      [ "$#" -ge 2 ] || { echo "Missing value after --ra" >&2; exit 2; }
+      NEW_ARGS+=("--ra" "$(normalize_ra "$2")")
+      shift 2 ;;
+    --dec)
+      [ "$#" -ge 2 ] || { echo "Missing value after --dec" >&2; exit 2; }
+      NEW_ARGS+=("--dec" "$(normalize_dec "$2")")
+      shift 2 ;;
+    *)
+      NEW_ARGS+=("$1")
+      shift ;;
+  esac
+done
+
+# Replace positional parameters for the remainder of run.sh
+set -- "${NEW_ARGS[@]}"
+# --- End sexagesimal normalization ---
 set -euo pipefail
 
 # Exit policy
