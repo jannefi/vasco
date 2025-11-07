@@ -55,8 +55,6 @@ def main(argv=None) -> int:
     processed = 0
 
     for td in tiles:
-        if args.max-tiles and processed >= args.max_tiles:  # backward-compat typo guard
-            break
         if args.max_tiles and processed >= args.max_tiles:
             break
         cat = None
@@ -121,7 +119,6 @@ def main(argv=None) -> int:
         # HPM pass: for nomatch, look for a Gaia source within 30" and back-propagate
         hpm_count = 0
         for ra, dec in no_match_coords:
-            # expand search to 30" and see if PM can explain displacement
             m2, ga = gaia_match(ra, dec, r_arcsec=cfg['hpm']['search_radius_arcsec'])
             if not m2 or not ga:
                 continue
