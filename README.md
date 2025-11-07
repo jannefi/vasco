@@ -23,6 +23,16 @@ python -m py_compile vasco/*.py vasco/utils/*.py
 ```bash
 ./run.sh --tess   --center-ra 150.1145 --center-dec 2.2050   --width-arcmin 60 --height-arcmin 60   --retry-after 4
 ```
+### Sexagesimal coordinates (convenient wrapper)
+
+You can pass RA/Dec in **sexagesimal** or **decimal** without manual conversion:
+
+```bash
+./run_sexagesimal.sh --one \
+  --ra "21:02:52.28" \
+  --dec "+48:34:18.90" \
+  --size-arcmin 60 --retry-after 4
+```
 
 **One tile (smoke test)**
 ```bash
