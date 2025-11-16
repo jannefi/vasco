@@ -1,7 +1,8 @@
+
 from __future__ import annotations
 import logging, shutil
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Optional
 from .utils.subprocess import run_cmd
 
 logger = logging.getLogger("vasco")
@@ -26,7 +27,6 @@ def _prepare_run_configs(config_root: str | Path, run_dir: str | Path) -> None:
             raise FileNotFoundError(f"Missing config file: {src}")
         shutil.copy2(src, dst)
         logger.info("[INFO] Staged config: %s", dst.name)
-
 
 def _ensure_fits_in_run_dir(fits_path: str | Path, run_dir: str | Path) -> str:
     src = Path(fits_path).resolve()
@@ -56,6 +56,8 @@ def _discover_psf_file(run_dir: Path) -> Path:
         raise RuntimeError("PSFEx did not produce any .psf file in run directory")
     return max(candidates, key=lambda p: p.stat().st_mtime)
 
+# -------------------- Existing two-pass PSF-aware extraction --------------------
+
 def run_psf_two_pass(
     fits_path: str | Path,
     run_dir: str | Path,
@@ -64,7 +66,6 @@ def run_psf_two_pass(
 ) -> Tuple[str, str, str]:
     rdir = Path(run_dir).resolve()
     rdir.mkdir(parents=True, exist_ok=True)
-
     import shutil as _sh
     sex_name = sex_bin or _sh.which('sex') or _sh.which('sextractor')
     if not sex_name:
@@ -73,7 +74,6 @@ def run_psf_two_pass(
 
     logger.info("[INFO] Preparing configs in run directory ...")
     _prepare_run_configs(config_root, rdir)
-
     fits_basename = _ensure_fits_in_run_dir(fits_path, rdir)
 
     logger.info("[INFO] PASS 1: SExtractor starting ...")
@@ -94,3 +94,131 @@ def run_psf_two_pass(
     logger.info("[INFO] PASS 2 complete: %s", pass2_cat.name)
 
     return str(pass1_cat), str(psf_model), str(pass2_cat)
+
+# -------------------- NEW: STILTS wiring for cross-matching --------------------
+
+from .utils.stilts_wrapper import stilts_xmatch  # Janne has STILTS in PATH
+
+# Export SExtractor LDAC (FITS binary table) to CSV via STILTS tcopy (preferred) or Astropy fallback.
+
+def export_ldac_to_csv(ldac_path: Path | str, out_csv: Path | str, *, columns: Optional[str] = None) -> Path:
+    ldac_path = str(ldac_path)
+    out_csv = Path(out_csv)
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        _ensure_tool('stilts')
+        cmd = ['stilts', 'tcopy', f'in={ldac_path}', f'out={str(out_csv)}', 'ofmt=csv']
+        if columns:
+            # keep only selected columns (expression filter)
+            # Example: columns="ALPHA_J2000,DELTA_J2000,FLUX_AUTO"
+            cmd += [f'ocmd=keepcols "{columns}"']
+        run_cmd(cmd)
+        return out_csv
+    except Exception as e:
+        logger.warning("[WARN] STILTS tcopy failed (%s); falling back to Astropy for LDAC→CSV", e)
+
+    # Fallback: Astropy
+    try:
+        from astropy.io import fits
+        import csv
+        with fits.open(ldac_path, memmap=False) as hdul:
+            # Find first BINTABLE HDU with data
+            hdu = next((h for h in hdul if h.is_image is False and len(getattr(h, 'columns', []))>0), None)
+            if hdu is None:
+                raise RuntimeError("No table HDU found in LDAC")
+            names = [c.name for c in hdu.columns]
+            rows = hdu.data
+        with open(out_csv, 'w', newline='') as f:
+            w = csv.writer(f)
+            w.writerow(names)
+            for r in rows:
+                w.writerow([r[n] for n in names])
+        return out_csv
+    except Exception as e:
+        raise RuntimeError(f"Failed to export LDAC to CSV: {e}")
+
+
+def run_crossmatch_with_stilts(
+    run_dir: str | Path,
+    pass2_ldac: str | Path,
+    *,
+    gaia_table: Optional[str | Path] = None,
+    ps1_table: Optional[str | Path] = None,
+    sex_ra_col: str = 'ALPHA_J2000',
+    sex_dec_col: str = 'DELTA_J2000',
+    ext_ra_col: str = 'ra',
+    ext_dec_col: str = 'dec',
+    radius_arcsec: float = 2.0,
+) -> Tuple[Optional[str], Optional[str], str]:
+    """
+    Convert SExtractor PASS2 LDAC to CSV and cross-match with external catalogs via STILTS.
+
+    Returns (xmatch_gaia, xmatch_ps1, sextractor_csv). xmatch_* may be None if table not supplied.
+    """
+    rdir = Path(run_dir)
+    xdir = rdir / 'xmatch'
+    xdir.mkdir(parents=True, exist_ok=True)
+
+    sex_csv = rdir / 'catalogs' / 'sextractor_pass2.csv'
+    sex_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    # Export LDAC to CSV for portability and easy inspection
+    export_ldac_to_csv(pass2_ldac, sex_csv)
+
+    x_gaia = x_ps1 = None
+
+    if gaia_table is not None:
+        x_gaia_path = xdir / 'sex_gaia_xmatch.csv'
+        stilts_xmatch(
+            str(sex_csv), str(gaia_table), str(x_gaia_path),
+            ra1=sex_ra_col, dec1=sex_dec_col,
+            ra2=ext_ra_col,  dec2=ext_dec_col,
+            radius_arcsec=radius_arcsec,
+            join_type='1and2',
+            ofmt='csv',
+        )
+        x_gaia = str(x_gaia_path)
+
+    if ps1_table is not None:
+        x_ps1_path = xdir / 'sex_ps1_xmatch.csv'
+        stilts_xmatch(
+            str(sex_csv), str(ps1_table), str(x_ps1_path),
+            ra1=sex_ra_col, dec1=sex_dec_col,
+            ra2=ext_ra_col,  dec2=ext_dec_col,
+            radius_arcsec=radius_arcsec,
+            join_type='1and2',
+            ofmt='csv',
+        )
+        x_ps1 = str(x_ps1_path)
+
+    return x_gaia, x_ps1, str(sex_csv)
+
+# Convenience: end-to-end run that performs the two-pass extraction and cross-matching.
+
+def run_psf_two_pass_and_xmatch(
+    fits_path: str | Path,
+    run_dir: str | Path,
+    *,
+    config_root: str | Path = "configs",
+    sex_bin: Optional[str] = None,
+    gaia_table: Optional[str | Path] = None,
+    ps1_table: Optional[str | Path] = None,
+    sex_ra_col: str = 'ALPHA_J2000',
+    sex_dec_col: str = 'DELTA_J2000',
+    ext_ra_col: str = 'ra',
+    ext_dec_col: str = 'dec',
+    radius_arcsec: float = 2.0,
+) -> Tuple[str, str, str, Optional[str], Optional[str], str]:
+    pass1, psf, pass2 = run_psf_two_pass(fits_path, run_dir, config_root=config_root, sex_bin=sex_bin)
+    x_gaia, x_ps1, sex_csv = run_crossmatch_with_stilts(
+        run_dir, pass2,
+        gaia_table=gaia_table,
+        ps1_table=ps1_table,
+        sex_ra_col=sex_ra_col,
+        sex_dec_col=sex_dec_col,
+        ext_ra_col=ext_ra_col,
+        ext_dec_col=ext_dec_col,
+        radius_arcsec=radius_arcsec,
+    )
+    return pass1, psf, pass2, x_gaia, x_ps1, sex_csv

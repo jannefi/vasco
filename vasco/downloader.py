@@ -1,17 +1,28 @@
+
 from __future__ import annotations
 import logging, gzip
 from logging.handlers import RotatingFileHandler
-from math import cos, radians, sqrt
 from pathlib import Path
 from typing import List, Tuple
 
-__all__ = ['configure_logger','fetch_skyview_dss','fetch_many','tessellate_centers','fetch_tessellated','SURVEY_ALIASES']
+# Service preference helpers (env/config controlled)
+from vasco.downloader_service_pref import get_fetch_order, log_service_choice
 
-_DEF_UA = 'VASCO/0.06.8 (+downloader fallback)'
+__all__ = [
+    'configure_logger','fetch_skyview_dss','fetch_many',
+    'tessellate_centers','fetch_tessellated','SURVEY_ALIASES'
+]
+
+_DEF_UA = 'VASCO/0.06.8 (+downloader stsci-first)'
+
 SURVEY_ALIASES = {
     'dss1':'DSS1', 'dss1-red':'DSS1 Red', 'dss1-blue':'DSS1 Blue', 'dss':'DSS',
     'dss2-red':'DSS2 Red','dss2-blue':'DSS2 Blue','dss2-ir':'DSS2 IR'
 }
+
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
 
 def configure_logger(out_dir: Path) -> logging.Logger:
     out_dir = Path(out_dir)
@@ -25,7 +36,9 @@ def configure_logger(out_dir: Path) -> logging.Logger:
         sh = logging.StreamHandler(); sh.setFormatter(fmt); lg.addHandler(sh)
     return lg
 
-# ---------- SkyView helpers ----------
+# -----------------------------------------------------------------------------
+# SkyView helpers
+# -----------------------------------------------------------------------------
 
 def _skyview_params_pixels(ra_deg: float, dec_deg: float, size_arcmin: float, survey: str,
                            pixel_scale_arcsec: float, user_agent: str) -> tuple[str, dict]:
@@ -44,6 +57,7 @@ def _skyview_params_pixels(ra_deg: float, dec_deg: float, size_arcmin: float, su
     headers = {'User-Agent': user_agent or _DEF_UA}
     p2 = dict(params); p2['__headers__'] = headers; return base, p2
 
+
 def _skyview_params_size(ra_deg: float, dec_deg: float, size_arcmin: float, survey: str,
                          user_agent: str) -> tuple[str, dict]:
     base = 'https://skyview.gsfc.nasa.gov/current/cgi/runquery.pl'
@@ -57,10 +71,12 @@ def _skyview_params_size(ra_deg: float, dec_deg: float, size_arcmin: float, surv
     headers = {'User-Agent': user_agent or _DEF_UA}
     p2 = dict(params); p2['__headers__'] = headers; return base, p2
 
-# ---------- STScI DSS fallback ----------
+# -----------------------------------------------------------------------------
+# STScI DSS helpers
+# -----------------------------------------------------------------------------
 
 def _stscidss_params(ra_deg: float, dec_deg: float, size_arcmin: float, survey_key: str,
-                     user_agent: str) -> tuple[str, dict]:
+                      user_agent: str) -> tuple[str, dict]:
     v = {'dss1':'1','dss1-red':'1','dss1-blue':'1',
          'dss2-red':'2','dss2-blue':'2','dss2-ir':'2'}.get(survey_key.lower(), '1')
     base = 'https://archive.stsci.edu/cgi-bin/dss_search'
@@ -72,7 +88,9 @@ def _stscidss_params(ra_deg: float, dec_deg: float, size_arcmin: float, survey_k
     headers = {'User-Agent': user_agent or _DEF_UA}
     p2 = dict(params); p2['__headers__'] = headers; return base, p2
 
-# ---------- HTTP with retries ----------
+# -----------------------------------------------------------------------------
+# HTTP + FITS normalization
+# -----------------------------------------------------------------------------
 
 def _http_get(url: str, params: dict, timeout: float=60.0):
     import requests
@@ -86,10 +104,10 @@ def _http_get(url: str, params: dict, timeout: float=60.0):
     r.raise_for_status()
     return r.content, r.headers.get('Content-Type','')
 
-# ---------- FITS detection & normalization ----------
 
 def _looks_like_gzip(buf: bytes) -> bool:
     return len(buf) >= 2 and buf[0] == 0x1F and buf[1] == 0x8B
+
 
 def _normalize_fits_bytes(buf: bytes) -> tuple[bytes, bool]:
     if not buf or len(buf) < 2880:
@@ -106,68 +124,98 @@ def _normalize_fits_bytes(buf: bytes) -> tuple[bytes, bool]:
         return buf, True
     return buf, False
 
-# ---------- Public API ----------
+# -----------------------------------------------------------------------------
+# Public API (STSci-first logic inside fetch)
+# -----------------------------------------------------------------------------
 
-def fetch_skyview_dss(ra_deg: float, dec_deg: float, *, size_arcmin: float=60.0,
-                      survey: str='dss1-red', pixel_scale_arcsec: float=1.7,
-                      out_dir: Path | str='.', basename: str | None=None,
-                      user_agent: str=_DEF_UA, logger: logging.Logger | None=None) -> Path:
+def fetch_skyview_dss(ra_deg: float, dec_deg: float, *,
+                      size_arcmin: float=60.0,
+                      survey: str='dss1-red',
+                      pixel_scale_arcsec: float=1.7,
+                      out_dir: Path | str='.',
+                      basename: str | None=None,
+                      user_agent: str=_DEF_UA,
+                      logger: logging.Logger | None=None) -> Path:
+    """Fetch DSS imagery with **STSci-first** preference.
+
+    Tries the preferred provider first (by default STScI), then falls back to the
+    other provider. Preserves the original filename convention.
+    """
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
     lg = logger or logging.getLogger('vasco.downloader')
+
     sv_name = SURVEY_ALIASES.get(survey.lower(), survey)
     tag = sv_name.lower().replace(' ','-')
     name = basename or f"{tag}_{ra_deg:.6f}_{dec_deg:.6f}_{int(round(size_arcmin))}arcmin.fits"
     out_path = out_dir / name
 
-    # Try SkyView (Pixels)
-    url, p = _skyview_params_pixels(ra_deg, dec_deg, size_arcmin, sv_name, pixel_scale_arcsec, user_agent)
-    lg.info('[GET] SkyView %s RA=%.6f Dec=%.6f size=%.2f arcmin (Pixels)', sv_name, ra_deg, dec_deg, size_arcmin)
-    try:
-        content, ctype = _http_get(url, dict(p))
-        data, ok = _normalize_fits_bytes(content)
-        if ok:
-            out_path.write_bytes(data)
-            lg.info('[OK] wrote %s (%d bytes)', str(out_path), len(data))
-            return out_path
-        else:
-            lg.warning('[WARN] SkyView(Pixels) not FITS (Content-Type=%s, len=%d)', ctype, len(content))
-    except Exception as e:
-        lg.warning('[WARN] SkyView(Pixels) failed: %s', e)
+    # Decide provider order and announce
+    order = get_fetch_order()
+    log_service_choice(order.primary)
 
-    # Try SkyView (Size in deg)
-    url, p = _skyview_params_size(ra_deg, dec_deg, size_arcmin, sv_name, user_agent)
-    lg.info('[GET] SkyView %s RA=%.6f Dec=%.6f size=%.3f deg (Size)', sv_name, ra_deg, dec_deg, size_arcmin/60.0)
-    try:
-        content, ctype = _http_get(url, dict(p))
-        data, ok = _normalize_fits_bytes(content)
-        if ok:
-            out_path.write_bytes(data)
-            lg.info('[OK] wrote %s (%d bytes)', str(out_path), len(data))
-            return out_path
-        else:
-            lg.warning('[WARN] SkyView(Size) not FITS (Content-Type=%s, len=%d)', ctype, len(content))
-    except Exception as e:
-        lg.warning('[WARN] SkyView(Size) failed: %s', e)
+    errors: list[tuple[str,str]] = []
 
-    # Fallback: STScI DSS
-    url, p = _stscidss_params(ra_deg, dec_deg, size_arcmin, survey, user_agent)
-    lg.info('[GET] STScI DSS RA=%.6f Dec=%.6f size=%.2f arcmin v=%s', ra_deg, dec_deg, size_arcmin, p.get('v'))
-    try:
-        content, ctype = _http_get(url, dict(p))
-        data, ok = _normalize_fits_bytes(content)
-        if ok:
-            out_path.write_bytes(data)
-            lg.info('[OK] wrote %s (%d bytes)', str(out_path), len(data))
-            return out_path
+    for provider in (order.primary, order.fallback):
+        if provider == 'stsci':
+            # ---- STScI DSS fetch ----
+            url, p = _stscidss_params(ra_deg, dec_deg, size_arcmin, survey, user_agent)
+            lg.info('[GET] STScI DSS RA=%.6f Dec=%.6f size=%.2f arcmin v=%s',
+                    ra_deg, dec_deg, size_arcmin, p.get('v'))
+            try:
+                content, ctype = _http_get(url, dict(p))
+                data, ok = _normalize_fits_bytes(content)
+                if ok:
+                    out_path.write_bytes(data)
+                    lg.info('[OK] wrote %s (%d bytes)', str(out_path), len(data))
+                    return out_path
+                else:
+                    bad = out_path.with_suffix('.html')
+                    bad.write_bytes(content)
+                    lg.error('[FAIL] Non-FITS from STScI (Content-Type=%s, len=%d) -> %s',
+                             ctype, len(content), bad)
+                    errors.append(('stsci', f'non-fits {ctype}'))
+            except Exception as e:
+                lg.warning('[WARN] STScI DSS fetch failed: %s', e)
+                errors.append(('stsci', str(e)))
         else:
-            bad = out_path.with_suffix('.html')
-            bad.write_bytes(content)
-            lg.error('[FAIL] Non-FITS from STScI (Content-Type=%s, len=%d) -> %s', ctype, len(content), bad)
-            raise RuntimeError('No FITS returned by providers')
-    except Exception as e:
-        lg.exception('[FAIL] STScI DSS fetch error: %s', e)
-        raise
+            # ---- SkyView fetches (Pixels then Size) ----
+            url, p = _skyview_params_pixels(ra_deg, dec_deg, size_arcmin, sv_name, pixel_scale_arcsec, user_agent)
+            lg.info('[GET] SkyView %s RA=%.6f Dec=%.6f size=%.2f arcmin (Pixels)', sv_name, ra_deg, dec_deg, size_arcmin)
+            try:
+                content, ctype = _http_get(url, dict(p))
+                data, ok = _normalize_fits_bytes(content)
+                if ok:
+                    out_path.write_bytes(data)
+                    lg.info('[OK] wrote %s (%d bytes)', str(out_path), len(data))
+                    return out_path
+                else:
+                    lg.warning('[WARN] SkyView(Pixels) not FITS (Content-Type=%s, len=%d)', ctype, len(content))
+            except Exception as e:
+                lg.warning('[WARN] SkyView(Pixels) failed: %s', e)
 
+            url, p = _skyview_params_size(ra_deg, dec_deg, size_arcmin, sv_name, user_agent)
+            lg.info('[GET] SkyView %s RA=%.6f Dec=%.6f size=%.3f deg (Size)', sv_name, ra_deg, dec_deg, size_arcmin/60.0)
+            try:
+                content, ctype = _http_get(url, dict(p))
+                data, ok = _normalize_fits_bytes(content)
+                if ok:
+                    out_path.write_bytes(data)
+                    lg.info('[OK] wrote %s (%d bytes)', str(out_path), len(data))
+                    return out_path
+                else:
+                    lg.warning('[WARN] SkyView(Size) not FITS (Content-Type=%s, len=%d)', ctype, len(content))
+                    errors.append(('skyview', f'non-fits {ctype}'))
+            except Exception as e:
+                lg.warning('[WARN] SkyView(Size) failed: %s', e)
+                errors.append(('skyview', str(e)))
+
+    # If we get here both providers failed
+    raise RuntimeError(f"No FITS returned by providers: {errors}")
+
+
+# -----------------------------------------------------------------------------
+# Batch fetch helpers (unchanged)
+# -----------------------------------------------------------------------------
 
 def fetch_many(rows: List[Tuple[float,float]], *, size_arcmin: float=60.0,
                survey: str='dss1-red', pixel_scale_arcsec: float=1.7,
@@ -178,8 +226,8 @@ def fetch_many(rows: List[Tuple[float,float]], *, size_arcmin: float=60.0,
     for ra,dec in rows:
         try:
             path = fetch_skyview_dss(ra, dec, size_arcmin=size_arcmin, survey=survey,
-                                     pixel_scale_arcsec=pixel_scale_arcsec, out_dir=out_dir,
-                                     user_agent=user_agent, logger=lg)
+                                      pixel_scale_arcsec=pixel_scale_arcsec, out_dir=out_dir,
+                                      user_agent=user_agent, logger=lg)
             if path.suffix.lower() == '.fits':
                 out.append(path)
         except Exception as e:
@@ -188,15 +236,15 @@ def fetch_many(rows: List[Tuple[float,float]], *, size_arcmin: float=60.0,
 
 
 def tessellate_centers(center_ra: float, center_dec: float, *,
-                        width_arcmin: float, height_arcmin: float,
-                        tile_radius_arcmin: float=30.0, overlap_arcmin: float=0.0) -> List[Tuple[float,float]]:
+                       width_arcmin: float, height_arcmin: float,
+                       tile_radius_arcmin: float=30.0, overlap_arcmin: float=0.0) -> List[Tuple[float,float]]:
     hw = width_arcmin/2.0; hh = height_arcmin/2.0; r = tile_radius_arcmin
-    from math import sqrt
+    from math import sqrt, cos, radians
     sy = max(1e-6, sqrt(3.0)*r - overlap_arcmin); sx = max(1e-6, 2.0*r - overlap_arcmin)
     res: List[Tuple[float,float]] = []; j=0; off=0.0
     while off <= hh + 1e-6:
         for sgn in (1.0, -1.0):
-            dec = center_dec + (sgn*off)/60.0; from math import cos, radians
+            dec = center_dec + (sgn*off)/60.0
             cd = max(1e-8, cos(radians(dec)))
             sxdeg = (sx/60.0)/cd; base = center_ra; raoff = 0.0 if (j%2)==0 else 0.5*sxdeg
             k=0
@@ -227,3 +275,11 @@ def fetch_tessellated(center_ra: float, center_dec: float, *,
     return fetch_many(centers, size_arcmin=size_arcmin, survey=survey,
                       pixel_scale_arcsec=pixel_scale_arcsec, out_dir=out_dir,
                       user_agent=user_agent, logger=logger)
+
+# Backward-compat shim kept from earlier edits
+
+def get_image_service(service):
+    if service.lower() == 'skyview':
+        print('[WARNING] SkyView images are resampled. Prefer STScI DSS for science runs.')
+    elif service.lower() == 'stsci':
+        print('[INFO] Using STScI DSS endpoint for original pixel grid.')
