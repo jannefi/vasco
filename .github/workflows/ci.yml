@@ -54,8 +54,7 @@ jobs:
                   print(f"ERR {f}: {e}")
                   errors.append((f, str(e)))
           if errors:
-              print("
-Summary of failures:")
+              print("Summary of failures:")
               for f, e in errors:
                   print(f" - {f}: {e}")
               sys.exit(1)
