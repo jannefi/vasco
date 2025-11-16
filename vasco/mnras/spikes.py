@@ -198,3 +198,13 @@ def write_ecsv(rows: List[Dict[str,Any]], path: Path):
     cols = sorted(rows[0].keys())
     tab = Table(rows=rows, names=cols)
     tab.write(str(path), format='ascii.ecsv', overwrite=True)
+
+# Added: Bright star mask using USNO-B1.0 (placeholder)
+def apply_usno_b1_mask(catalog_path, ra, dec, radius_deg=0.5):
+    '''Apply bright star mask using USNO-B1.0 catalog.
+    catalog_path: path to USNO-B1.0 data (CSV or FITS)
+    ra, dec: target coordinates in degrees
+    radius_deg: search radius in degrees
+    '''
+    print(f'[INFO] Applying USNO-B1.0 mask around RA={ra}, Dec={dec}, radius={radius_deg} deg')
+    # TODO: Implement actual query and masking logic
