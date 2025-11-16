@@ -13,26 +13,32 @@ This package lets you run the VASCO two-pass **SExtractor → PSFEx → SExtract
 ## Install
 ```bash
 TODO
-python -m py_compile vasco/*.py vasco/utils/*.py
+python -m py_compile vasco/*.py vasco/utils/*.py vasco/mnras/*.py
 ```
 
 ## Quick start
 **Tessellate 60′×60′ (hex 30′ tiles), DSS1-Red**
 ```bash
- python -m vasco.cli_pipeline tess2pass --center-ra 150.1145 --center-dec 2.2050   --width-arcmin 60 --height-arcmin 60   --retry-after 4 --survey dss1-red
+python -m vasco.cli_pipeline tess2pass \
+  --center-ra 150.0 \
+  --center-dec 2.0 \
+  --width-arcmin 120 \
+  --height-arcmin 120 \
+  --tile-radius-arcmin 30 \
+  --overlap-arcmin 5 \
+  --size-arcmin 60 \
+  --survey dss1-red \
+  --pixel-scale-arcsec 1.7 \
+  --export csv \
+  --hist-col FWHM_IMAGE
 ```
-### Sexagesimal coordinates (convenient wrapper)
+### Sexagesimal coordinates
 
 You can pass RA/Dec in **sexagesimal** or **decimal** without manual conversion:
 
 **One tile (smoke test)**
 ```bash
 python -m vasco.cli_pipeline one2pass   --ra 150.123 --dec 2.345   --size 30 --survey dss1-red --pixel-scale 1.7
-```
-
-**Manual retry later**
-```bash
-./run.sh --retry-missing data/runs/run-YYYYMMDD_HHMMSS
 ```
 
 Outputs appear under `data/runs/run-YYYYMMDD_HHMMSS/`.
