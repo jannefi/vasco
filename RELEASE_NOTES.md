@@ -1,4 +1,4 @@
-# VASCO v0.06.8 — PS1+Gaia x‑match hardening
+# VASCO v0.06.9 — PS1+Gaia x‑match hardening + USNO B.10, bright star mask
 
 **Highlights**
 - Sub‑second PS1 mean-table fetches using explicit columns + small degree radii.
