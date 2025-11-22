@@ -1,4 +1,4 @@
-# VASCO v0.06.8 — PSF-aware 2-pass pipeline (release 16-Nov-2025)
+# VASCO v0.06.9 — PSF-aware 2-pass pipeline (release 22-Nov-2025)
 
 This package lets you run the VASCO two-pass **SExtractor → PSFEx → SExtractor** pipeline on DSS tiles, with a robust downloader (SkyView fallback + STScI DSS), exports (ECSV+CSV/Parquet), and automation via `run.sh` (tessellation, post-run summary, and retry logic).
 

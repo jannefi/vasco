@@ -1,14 +1,15 @@
 # Changelog
 All notable changes to this project will be documented in this file.
-This project follows Semantic Versioning.
 
-## [0.06.8] - 2025-11-16
+## [0.06.9] - 2025-11-22
 ### Added
+- **USNO B1.0** & related config changes, bright star mask
 - **PS1 fetch** env knobs: `VASCO_PS1_RADIUS_DEG`, `VASCO_PS1_TIMEOUT`, `VASCO_PS1_ATTEMPTS`, `VASCO_PS1_COLUMNS`.
 - **PS1 disable** toggle via `VASCO_DISABLE_PS1=1` (skips PS1 during dev runs).
 - **Gaia fallback** x-match: if STILTS errors, fall back to Astropy spherical match (2") with numeric coercion.
 
 ### Changed
+- **configs and python code** components: bright_star_mask, stilts_wrapper, testdata
 - **PS1 DR2 mean-table** fetch now requests **explicit columns** (includes `raMean,decMean` + compact mags) for fast, predictable responses.
 - **Auto-detect RA/Dec** in external CSVs (Gaia & PS1) now covers: 
   `('ra','dec')`, `('RA_ICRS','DE_ICRS')`, `('RAJ2000','DEJ2000')`, `('RA','DEC')`, `('lon','lat')`,
@@ -27,4 +28,4 @@ This project follows Semantic Versioning.
 - `vasco/mnras/xmatch_stilts.py`
 - `vasco/cli_pipeline.py`
 
-[0.06.8]: https://github.com/<YOUR-ORG>/<YOUR-REPO>/releases/tag/v0.06.8
+
