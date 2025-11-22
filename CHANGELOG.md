@@ -1,6 +1,11 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## v0.06.9 (Patch: CLI skip non-POSS tiles)
+- `one2pass`: wrap STScI download call; on strict POSS enforcement failure (non-POSS plate),
+  write `RUN_MISSING.json`/`RUN_OVERVIEW.md` and exit cleanly without aborting the run.
+- `tess2pass`: already marks missing tiles when downloads fail; no changes needed beyond logging.
+
 ## [0.06.9] - 2025-11-22
 ### Added
 - **USNO B1.0** & related config changes, bright star mask
