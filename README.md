@@ -17,20 +17,19 @@ python -m py_compile vasco/*.py vasco/utils/*.py vasco/mnras/*.py
 ```
 
 ## Quick start
-**Tessellate 60′×60′ (hex 30′ tiles), DSS1-Red**
+**Tessellate examplle. 3x3 grid (180′ × 180′) With 60′ tiles (30′ radius) and 5′ overlap,**
 ```bash
 python -m vasco.cli_pipeline tess2pass \
-  --center-ra 150.0 \
-  --center-dec 2.0 \
-  --width-arcmin 120 \
-  --height-arcmin 120 \
+  --center-ra 150.123 --center-dec 2.345 \
+  --width-arcmin 180 --height-arcmin 180 \
   --tile-radius-arcmin 30 \
   --overlap-arcmin 5 \
   --size-arcmin 60 \
   --survey dss1-red \
   --pixel-scale-arcsec 1.7 \
   --export csv \
-  --hist-col FWHM_IMAGE
+  --hist-col FWHM_IMAGE \
+  --workdir data/runs
 ```
 ### Sexagesimal coordinates
 
@@ -38,12 +37,13 @@ You can pass RA/Dec in **sexagesimal** or **decimal** without manual conversion:
 
 **One tile (smoke test)**
 ```bash
-python -m vasco.cli_pipeline one2pass   --ra 150.123 --dec 2.345   --size 30 --survey dss1-red --pixel-scale 1.7
+python -m vasco.cli_pipeline one2pass --ra 150.123 --dec 2.345 --size 30 --survey dss1-red --pixel-scale 1.7
 ```
 
 Outputs appear under `data/runs/run-YYYYMMDD_HHMMSS/`.
 
 ## Notes
+- PS1/MAST calls can take a long time
 - Downloader endpoints & parameters per the official docs: [SkyView](https://skyview.gsfc.nasa.gov/current/docs/batchpage.html), [Query form](https://skyview.gsfc.nasa.gov/current/cgi/query.pl), and [STScI DSS CGI](https://stdatu.stsci.edu/dss/script_usage.html). STScI is preferred.
 - CSV omits multi-dimensional columns; full fidelity is in **ECSV**.
 - Configs in `configs/` are **minimal** and intended as a starting point.
