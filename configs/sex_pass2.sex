@@ -18,3 +18,7 @@ PSF_NAME         pass1.psf
 SEEING_FWHM      1.2
 CHECKIMAGE_TYPE  NONE
 VERBOSE_TYPE     QUIET
+STARNNW_NAME     default.nnw
+
+
+
