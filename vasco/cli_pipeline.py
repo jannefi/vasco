@@ -3,26 +3,23 @@ from __future__ import annotations
 import argparse, json, time, subprocess, os
 from pathlib import Path
 from typing import List, Dict, Any
-
 from . import downloader as dl
 from .pipeline import run_psf_two_pass, ToolMissingError
 from .exporter3 import export_and_summarize
-
 # Online external catalog fetchers
 from vasco.external_fetch_online import (
     fetch_gaia_neighbourhood,
     fetch_ps1_neighbourhood,
 )
-
 # STILTS helpers
 from vasco.mnras.xmatch_stilts import (
     xmatch_sextractor_with_gaia,
     xmatch_sextractor_with_ps1,
 )
 
-# -----------------------------------------------------------
+# ------------------------------------------------------------
 # Run dirs / overview helpers
-# -----------------------------------------------------------
+# ------------------------------------------------------------
 
 def _build_run_dir(base: str | Path | None = None) -> Path:
     base = Path(base) if base else Path('data') / 'runs'
@@ -80,9 +77,9 @@ def _write_overview(run_dir: Path, counts: dict, results: list, missing: list[di
         lines.append('')
     _write_text(run_dir / 'RUN_OVERVIEW.md', nl.join(lines) + nl)
 
-# -----------------------------------------------------------
+# ------------------------------------------------------------
 # LDAC → CSV export (robust)
-# -----------------------------------------------------------
+# ------------------------------------------------------------
 
 def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
     tile_dir = Path(tile_dir)
@@ -92,7 +89,6 @@ def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
     sex_csv = cat_dir / 'sextractor_pass2.csv'
     if sex_csv.exists():
         return sex_csv
-
     # Astropy (robust for LDAC)
     try:
         from astropy.io import fits
@@ -105,15 +101,14 @@ def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
                 raise RuntimeError('No table HDU with columns found in LDAC')
             names = [c.name for c in hdu.columns]
             rows = hdu.data
-        with sex_csv.open('w', newline='') as f:
-            w = pycsv.writer(f)
-            w.writerow(names)
-            for r in rows:
-                w.writerow([r[n] for n in names])
-        return sex_csv
+            with sex_csv.open('w', newline='') as f:
+                w = pycsv.writer(f)
+                w.writerow(names)
+                for r in rows:
+                    w.writerow([r[n] for n in names])
+            return sex_csv
     except Exception:
         pass  # STILTS fallback
-
     try:
         cmd = ['stilts', 'tcopy', f'in={str(pass2_ldac)}+2', f'out={str(sex_csv)}', 'ofmt=csv']
         subprocess.run(cmd, check=True)
@@ -121,39 +116,37 @@ def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
     except Exception as e:
         raise RuntimeError(f'Failed to export LDAC to CSV via Astropy or STILTS: {e}')
 
-# -----------------------------------------------------------
+# ------------------------------------------------------------
 # CSV header RA/Dec presence check (includes PS1 mean names)
-# -----------------------------------------------------------
+# ------------------------------------------------------------
 
 def _csv_has_radec(csv_path: Path) -> bool:
     import csv
     try:
         with open(csv_path, newline='') as f:
             hdr = next(csv.reader(f))
-        cols = {h.strip() for h in hdr}
-        for a, b in [
-            ('ra','dec'), ('RA_ICRS','DE_ICRS'), ('RAJ2000','DEJ2000'),
-            ('RA','DEC'), ('lon','lat'), ('raMean','decMean'), ('RAMean','DecMean')
-        ]:
-            if a in cols and b in cols:
-                return True
+            cols = {h.strip() for h in hdr}
+            for a, b in [
+                ('ra','dec'), ('RA_ICRS','DE_ICRS'), ('RAJ2000','DEJ2000'),
+                ('RA','DEC'), ('lon','lat'), ('raMean','decMean'), ('RAMean','DecMean')
+            ]:
+                if a in cols and b in cols:
+                    return True
         return False
     except Exception:
         return False
 
-# -----------------------------------------------------------
+# ------------------------------------------------------------
 # Post-xmatch per tile (Gaia/PS1 independent)
-# -----------------------------------------------------------
+# ------------------------------------------------------------
 
 def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 2.0) -> None:
     tile_dir = Path(tile_dir)
     xdir = tile_dir / 'xmatch'
     xdir.mkdir(parents=True, exist_ok=True)
-
     sex_csv = _ensure_sextractor_csv(tile_dir, pass2_ldac)
     gaia_csv = tile_dir / 'catalogs' / 'gaia_neighbourhood.csv'
-    ps1_csv  = tile_dir / 'catalogs' / 'ps1_neighbourhood.csv'
-
+    ps1_csv = tile_dir / 'catalogs' / 'ps1_neighbourhood.csv'
     # Gaia independent
     try:
         if gaia_csv.exists() and _csv_has_radec(gaia_csv):
@@ -164,32 +157,51 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 2.0) -> No
             print('[POST][WARN]', tile_dir.name, 'Gaia CSV missing or lacks RA/Dec → skipped')
     except Exception as e:
         print('[POST][WARN]', tile_dir.name, 'Gaia xmatch failed:', e)
-
     # PS1 independent
     try:
         if ps1_csv.exists() and _csv_has_radec(ps1_csv):
             out_ps1 = xdir / 'sex_ps1_xmatch.csv'
             xmatch_sextractor_with_ps1(sex_csv, ps1_csv, out_ps1, radius_arcsec=radius_arcsec)
-            print('[POST]', tile_dir.name, 'PS1  xmatch ->', out_ps1)
+            print('[POST]', tile_dir.name, 'PS1 xmatch ->', out_ps1)
         else:
             print('[POST][WARN]', tile_dir.name, 'PS1 CSV missing or lacks RA/Dec → skipped')
     except Exception as e:
         print('[POST][WARN]', tile_dir.name, 'PS1 xmatch failed:', e)
 
-# -----------------------------------------------------------
+# ------------------------------------------------------------
 # Commands
-# -----------------------------------------------------------
+# ------------------------------------------------------------
 
 def cmd_one(args: argparse.Namespace) -> int:
     run_dir = _build_run_dir(Path(args.workdir) if args.workdir else None)
     lg = dl.configure_logger(run_dir / 'logs')
     out_raw = run_dir / 'raw'; out_raw.mkdir(parents=True, exist_ok=True)
 
-    fits = dl.fetch_skyview_dss(args.ra, args.dec, size_arcmin=args.size_arcmin,
-                                survey=args.survey, pixel_scale_arcsec=args.pixel_scale_arcsec,
-                                out_dir=out_raw, basename=None, logger=lg)
-    td = _tile_dir(run_dir, Path(fits).stem)
+    # STScI-only fetch; skip tile if non-POSS is returned
+    try:
+        fits = dl.fetch_skyview_dss(args.ra, args.dec, size_arcmin=args.size_arcmin,
+            survey=args.survey, pixel_scale_arcsec=args.pixel_scale_arcsec,
+            out_dir=out_raw, basename=None, logger=lg)
+    except RuntimeError as e:
+        if 'Non-POSS plate returned by STScI' in str(e):
+            print('[SKIP]', f'RA={args.ra:.6f}', f'Dec={args.dec:.6f}',
+                  '-> non-POSS plate; tile omitted to preserve strict provenance.')
+            # Write minimal artifacts so CLI exits cleanly
+            results: list[dict] = []
+            counts = {'planned': 1, 'downloaded': 0, 'processed': 0}
+            missing = [{'ra': float(args.ra), 'dec': float(args.dec),
+                        'expected_stem': _expected_stem(args.ra, args.dec, args.survey, args.size_arcmin)}]
+            _write_json(run_dir / 'RUN_INDEX.json', results)
+            _write_json(run_dir / 'RUN_COUNTS.json', counts)
+            _write_json(run_dir / 'RUN_MISSING.json', missing)
+            _write_overview(run_dir, counts, results, missing)
+            print('Run directory:', run_dir)
+            print('Planned tiles: 1 Downloaded: 0 Processed: 0 (non-POSS skipped)')
+            return 0
+        else:
+            raise
 
+    td = _tile_dir(run_dir, Path(fits).stem)
     try:
         p1, psf, p2 = run_psf_two_pass(fits, td, config_root='configs')
     except ToolMissingError as e:
@@ -204,7 +216,6 @@ def cmd_one(args: argparse.Namespace) -> int:
         fetch_gaia_neighbourhood(td, args.ra, args.dec, radius_arcmin)
     except Exception as e:
         print('[POST][WARN]', td.name, 'Gaia fetch failed:', e)
-
     try:
         if os.getenv('VASCO_DISABLE_PS1'):
             print('[POST][INFO]', td.name, 'PS1 disabled by env — skipping fetch')
@@ -222,12 +233,10 @@ def cmd_one(args: argparse.Namespace) -> int:
     results = [{'tile': Path(fits).stem, 'pass1': p1, 'psf': psf, 'pass2': p2}]
     counts = {'planned': 1, 'downloaded': 1, 'processed': 1}
     missing: list[dict] = []
-
     _write_json(run_dir / 'RUN_INDEX.json', results)
     _write_json(run_dir / 'RUN_COUNTS.json', counts)
     _write_json(run_dir / 'RUN_MISSING.json', missing)
     _write_overview(run_dir, counts, results, missing)
-
     print('Run directory:', run_dir)
     print('Planned tiles:', counts['planned'], 'Downloaded:', counts['downloaded'], 'Processed:', counts['processed'])
     return 0
@@ -239,16 +248,15 @@ def cmd_tess(args: argparse.Namespace) -> int:
     out_raw = run_dir / 'raw'; out_raw.mkdir(parents=True, exist_ok=True)
 
     centers = dl.tessellate_centers(args.center_ra, args.center_dec,
-                                    width_arcmin=args.width_arcmin, height_arcmin=args.height_arcmin,
-                                    tile_radius_arcmin=args.tile_radius_arcmin, overlap_arcmin=args.overlap_arcmin)
+        width_arcmin=args.width_arcmin, height_arcmin=args.height_arcmin,
+        tile_radius_arcmin=args.tile_radius_arcmin, overlap_arcmin=args.overlap_arcmin)
     planned = len(centers)
 
     fits_list = dl.fetch_many(centers, size_arcmin=args.size_arcmin, survey=args.survey,
-                              pixel_scale_arcsec=args.pixel_scale_arcsec, out_dir=out_raw, logger=lg)
+        pixel_scale_arcsec=args.pixel_scale_arcsec, out_dir=out_raw, logger=lg)
     downloaded = len(fits_list)
 
     results: list[Dict[str, Any]] = []
-
     for fp in fits_list:
         stem = Path(fp).stem
         td = _tile_dir(run_dir, stem)
@@ -257,7 +265,6 @@ def cmd_tess(args: argparse.Namespace) -> int:
         except ToolMissingError as e:
             print('[ERROR]', e)
             continue
-
         export_and_summarize(p2, td, export=args.export, histogram_col=args.hist_col)
 
         # Online external fetch per tile
@@ -267,12 +274,10 @@ def cmd_tess(args: argparse.Namespace) -> int:
             ra_t = float(parts[1]); dec_t = float(parts[2])
         except Exception:
             ra_t, dec_t = centers[0]
-
         try:
             fetch_gaia_neighbourhood(td, ra_t, dec_t, radius_arcmin)
         except Exception as e:
             print('[POST][WARN]', td.name, 'Gaia fetch failed:', e)
-
         try:
             if os.getenv('VASCO_DISABLE_PS1'):
                 print('[POST][INFO]', td.name, 'PS1 disabled by env — skipping fetch')
@@ -280,17 +285,14 @@ def cmd_tess(args: argparse.Namespace) -> int:
                 fetch_ps1_neighbourhood(td, ra_t, dec_t, radius_arcmin)
         except Exception as e:
             print('[POST][WARN]', td.name, 'PS1 fetch failed:', e)
-
         try:
             _post_xmatch_tile(td, p2, radius_arcsec=2.0)
         except Exception as e:
             print('[POST][WARN] xmatch failed for', td.name, ':', e)
-
         results.append({'tile': stem, 'pass1': p1, 'psf': psf, 'pass2': p2})
 
     processed = len(results)
     processed_stems = {rec['tile'] for rec in results}
-
     missing: list[dict] = []
     for ra, dec in centers:
         exp_stem = _expected_stem(ra, dec, args.survey, args.size_arcmin)
@@ -298,131 +300,23 @@ def cmd_tess(args: argparse.Namespace) -> int:
             missing.append({'ra': float(ra), 'dec': float(dec), 'expected_stem': exp_stem})
 
     counts = {'planned': planned, 'downloaded': downloaded, 'processed': processed}
-
     _write_json(run_dir / 'RUN_INDEX.json', results)
     _write_json(run_dir / 'RUN_COUNTS.json', counts)
     _write_json(run_dir / 'RUN_MISSING.json', missing)
     _write_overview(run_dir, counts, results, missing)
-
     print('Run directory:', run_dir)
     print('Planned tiles:', planned, 'Downloaded:', downloaded, 'Processed:', processed)
     if missing:
         print(f"Missing tiles: {len(missing)} (see RUN_MISSING.json / RUN_OVERVIEW.md)")
     return 0
 
-# -----------------------------------------------------------
-# retry-missing
-# -----------------------------------------------------------
-
-def _retry_sleep(attempt: int, base: float, cap: float) -> None:
-    import random, time as _t
-    delay = min(cap, base * (2 ** max(0, attempt - 1)))
-    delay *= (0.8 + 0.4 * random.random())
-    _t.sleep(delay)
-
-def cmd_retry_missing(args: argparse.Namespace) -> int:
-    run_dir = Path(args.run_dir).resolve()
-    if not run_dir.exists():
-        print('[ERROR] run dir not found:', run_dir)
-        return 2
-
-    counts_path  = run_dir / 'RUN_COUNTS.json'
-    missing_path = run_dir / 'RUN_MISSING.json'
-    index_path   = run_dir / 'RUN_INDEX.json'
-
-    if not missing_path.exists():
-        print('[INFO] No RUN_MISSING.json found. Nothing to retry.')
-        print('Run directory:', run_dir)
-        return 0
-
-    try:
-        counts  = _read_json(counts_path)  if counts_path.exists() else {'planned':0,'downloaded':0,'processed':0}
-        missing = _read_json(missing_path)
-        results = _read_json(index_path)   if index_path.exists()  else []
-    except Exception as e:
-        print('[ERROR] cannot read run artifacts:', e)
-        return 2
-
-    lg = dl.configure_logger(run_dir / 'logs')
-    out_raw = run_dir / 'raw'; out_raw.mkdir(parents=True, exist_ok=True)
-
-    recovered: list[dict] = []
-    still_missing: list[dict] = []
-
-    for rec in missing:
-        ra = float(rec['ra']); dec = float(rec['dec'])
-        ok = False; fp = None
-        for attempt in range(1, args.attempts + 1):
-            try:
-                fp = dl.fetch_skyview_dss(ra, dec, size_arcmin=args.size_arcmin, survey=args.survey,
-                                          pixel_scale_arcsec=args.pixel_scale_arcsec, out_dir=out_raw, logger=lg)
-                ok = True; break
-            except Exception as e:
-                print(f"[WARN] Retry {attempt}/{args.attempts} failed for RA={ra:.6f} Dec={dec:.6f}: {e}")
-            if attempt < args.attempts:
-                _retry_sleep(attempt, args.backoff_base, args.backoff_cap)
-        if not ok or fp is None:
-            still_missing.append(rec); continue
-
-        stem = Path(fp).stem
-        td = _tile_dir(run_dir, stem)
-        try:
-            p1, psf, p2 = run_psf_two_pass(fp, td, config_root='configs')
-            export_and_summarize(p2, td, export=args.export, histogram_col=args.hist_col)
-
-            # Online fetch + post-xmatch
-            radius_arcmin = args.size_arcmin * (2 ** 0.5) * 0.5
-            try:
-                parts = stem.split('_')
-                ra_t = float(parts[1]); dec_t = float(parts[2])
-            except Exception:
-                ra_t, dec_t = ra, dec
-
-            try:
-                fetch_gaia_neighbourhood(td, ra_t, dec_t, radius_arcmin)
-            except Exception as e:
-                print('[POST][WARN]', td.name, 'Gaia fetch failed:', e)
-            try:
-                if os.getenv('VASCO_DISABLE_PS1'):
-                    print('[POST][INFO]', td.name, 'PS1 disabled by env — skipping fetch')
-                else:
-                    fetch_ps1_neighbourhood(td, ra_t, dec_t, radius_arcmin)
-            except Exception as e:
-                print('[POST][WARN]', td.name, 'PS1 fetch failed:', e)
-            try:
-                _post_xmatch_tile(td, p2, radius_arcsec=2.0)
-            except Exception as e:
-                print('[POST][WARN] xmatch failed for', td.name, ':', e)
-
-            results.append({'tile': stem, 'pass1': p1, 'psf': psf, 'pass2': p2})
-            recovered.append({'ra': ra, 'dec': dec, 'expected_stem': stem})
-        except ToolMissingError as e:
-            print('[ERROR] Tools missing for', stem, ':', e); still_missing.append(rec)
-        except Exception as e:
-            print('[ERROR] Processing failed for', stem, ':', e); still_missing.append(rec)
-
-    prev_processed  = int(counts.get('processed',  0) or 0)
-    prev_downloaded = int(counts.get('downloaded', 0) or 0)
-    counts['processed']  = prev_processed  + len(recovered)
-    counts['downloaded'] = prev_downloaded + len(recovered)
-
-    _write_json(index_path, results)
-    _write_json(counts_path, counts)
-    _write_json(missing_path, still_missing)
-    _write_overview(run_dir, counts, results, still_missing)
-
-    print('Run directory:', run_dir)
-    print(f"Recovered tiles: {len(recovered)} Remaining missing: {len(still_missing)}")
-    return 0
-
-# -----------------------------------------------------------
+# ------------------------------------------------------------
 # CLI
-# -----------------------------------------------------------
+# ------------------------------------------------------------
 
 def main(argv: List[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog='vasco.cli_pipeline', description='VASCO pipeline orchestrator (download + 2-pass + export + QA + post-xmatch)')
     sub = p.add_subparsers(dest='cmd')
-
     one = sub.add_parser('one2pass', help='One RA/Dec -> download -> two-pass pipeline (auto fetch + post-xmatch)')
     one.add_argument('--ra', type=float, required=True)
     one.add_argument('--dec', type=float, required=True)
@@ -465,6 +359,101 @@ def main(argv: List[str] | None = None) -> int:
     if hasattr(args, 'func'):
         return args.func(args)
     p.print_help()
+    return 0
+
+# ------------------------------------------------------------
+# retry-missing command (unchanged)
+# ------------------------------------------------------------
+
+def _retry_sleep(attempt: int, base: float, cap: float) -> None:
+    import random, time as _t
+    delay = min(cap, base * (2 ** max(0, attempt - 1)))
+    delay *= (0.8 + 0.4 * random.random())
+    _t.sleep(delay)
+
+def cmd_retry_missing(args: argparse.Namespace) -> int:
+    run_dir = Path(args.run_dir).resolve()
+    if not run_dir.exists():
+        print('[ERROR] run dir not found:', run_dir)
+        return 2
+    counts_path = run_dir / 'RUN_COUNTS.json'
+    missing_path = run_dir / 'RUN_MISSING.json'
+    index_path = run_dir / 'RUN_INDEX.json'
+    if not missing_path.exists():
+        print('[INFO] No RUN_MISSING.json found. Nothing to retry.')
+        print('Run directory:', run_dir)
+        return 0
+    try:
+        counts = _read_json(counts_path) if counts_path.exists() else {'planned':0,'downloaded':0,'processed':0}
+        missing = _read_json(missing_path)
+        results = _read_json(index_path) if index_path.exists() else []
+    except Exception as e:
+        print('[ERROR] cannot read run artifacts:', e)
+        return 2
+    lg = dl.configure_logger(run_dir / 'logs')
+    out_raw = run_dir / 'raw'; out_raw.mkdir(parents=True, exist_ok=True)
+
+    recovered: list[dict] = []
+    still_missing: list[dict] = []
+    for rec in missing:
+        ra = float(rec['ra']); dec = float(rec['dec'])
+        ok = False; fp = None
+        for attempt in range(1, args.attempts + 1):
+            try:
+                fp = dl.fetch_skyview_dss(ra, dec, size_arcmin=args.size_arcmin, survey=args.survey,
+                    pixel_scale_arcsec=args.pixel_scale_arcsec, out_dir=out_raw, logger=lg)
+                ok = True; break
+            except Exception as e:
+                print(f"[WARN] Retry {attempt}/{args.attempts} failed for RA={ra:.6f} Dec={dec:.6f}: {e}")
+            if attempt < args.attempts:
+                _retry_sleep(attempt, args.backoff_base, args.backoff_cap)
+        if not ok or fp is None:
+            still_missing.append(rec); continue
+        stem = Path(fp).stem
+        td = _tile_dir(run_dir, stem)
+        try:
+            p1, psf, p2 = run_psf_two_pass(fp, td, config_root='configs')
+            export_and_summarize(p2, td, export=args.export, histogram_col=args.hist_col)
+            # Online fetch + post-xmatch
+            radius_arcmin = args.size_arcmin * (2 ** 0.5) * 0.5
+            try:
+                parts = stem.split('_')
+                ra_t = float(parts[1]); dec_t = float(parts[2])
+            except Exception:
+                ra_t, dec_t = ra, dec
+            try:
+                fetch_gaia_neighbourhood(td, ra_t, dec_t, radius_arcmin)
+            except Exception as e:
+                print('[POST][WARN]', td.name, 'Gaia fetch failed:', e)
+            try:
+                if os.getenv('VASCO_DISABLE_PS1'):
+                    print('[POST][INFO]', td.name, 'PS1 disabled by env — skipping fetch')
+                else:
+                    fetch_ps1_neighbourhood(td, ra_t, dec_t, radius_arcmin)
+            except Exception as e:
+                print('[POST][WARN]', td.name, 'PS1 fetch failed:', e)
+            try:
+                _post_xmatch_tile(td, p2, radius_arcsec=2.0)
+            except Exception as e:
+                print('[POST][WARN] xmatch failed for', td.name, ':', e)
+            results.append({'tile': stem, 'pass1': p1, 'psf': psf, 'pass2': p2})
+            recovered.append({'ra': ra, 'dec': dec, 'expected_stem': stem})
+        except ToolMissingError as e:
+            print('[ERROR] Tools missing for', stem, ':', e); still_missing.append(rec)
+        except Exception as e:
+            print('[ERROR] Processing failed for', stem, ':', e); still_missing.append(rec)
+
+    prev_processed = int(counts.get('processed', 0) or 0)
+    prev_downloaded = int(counts.get('downloaded', 0) or 0)
+    counts['processed'] = prev_processed + len(recovered)
+    counts['downloaded'] = prev_downloaded + len(recovered)
+
+    _write_json(index_path, results)
+    _write_json(counts_path, counts)
+    _write_json(missing_path, still_missing)
+    _write_overview(run_dir, counts, results, still_missing)
+    print('Run directory:', run_dir)
+    print(f"Recovered tiles: {len(recovered)} Remaining missing: {len(still_missing)}")
     return 0
 
 if __name__ == '__main__':

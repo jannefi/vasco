@@ -1,5 +1,7 @@
 # VASCO v0.06.9 — PSF-aware 2-pass pipeline (release 22-Nov-2025)
 
+Changed the downloader logic so that only POSSI-E/POSS-I images are allowed. Other images are dismissed. Example coordinates updated. Fallback to SkyView was removed.
+
 This package lets you run the VASCO two-pass **SExtractor → PSFEx → SExtractor** pipeline on DSS tiles, with a robust downloader (SkyView fallback + STScI DSS), exports (ECSV+CSV/Parquet), and automation via `run.sh` (tessellation, post-run summary, and retry logic).
 
 **Key features**
@@ -17,27 +19,43 @@ python -m py_compile vasco/*.py vasco/utils/*.py vasco/mnras/*.py
 ```
 
 ## Quick start
-**Tessellate examplle. 3x3 grid (180′ × 180′) With 60′ tiles (30′ radius) and 5′ overlap,**
+**Tessellate examplle. **
 ```bash
 python -m vasco.cli_pipeline tess2pass \
-  --center-ra 150.123 --center-dec 2.345 \
-  --width-arcmin 180 --height-arcmin 180 \
+  --center-ra 150.000 --center-dec 20.000 \
+  --width-arcmin 120 --height-arcmin 120 \
   --tile-radius-arcmin 30 \
-  --overlap-arcmin 5 \
+  --overlap-arcmin 0 \
   --size-arcmin 60 \
-  --survey dss1-red \
+  --survey poss1-e \
   --pixel-scale-arcsec 1.7 \
   --export csv \
   --hist-col FWHM_IMAGE \
   --workdir data/runs
 ```
+
+## Check all unmatched data, create *unmatched csv
+```bash
+python filter_unmatched_all.py data/runs/
+```
+
+## Show unmatched data
+```bash
+python scripts/summarize_xmatch.py data/runs/[runfolder]
+```
+
 ### Sexagesimal coordinates
 
 You can pass RA/Dec in **sexagesimal** or **decimal** without manual conversion:
 
 **One tile (smoke test)**
 ```bash
-python -m vasco.cli_pipeline one2pass --ra 150.123 --dec 2.345 --size 30 --survey dss1-red --pixel-scale 1.7
+python -m vasco.cli_pipeline one2pass \
+  --ra 150.000 --dec 20.000 \
+  --size-arcmin 60 \
+  --survey poss1-e \
+  --pixel-scale-arcsec 1.7 \
+  --workdir data/runs
 ```
 
 Outputs appear under `data/runs/run-YYYYMMDD_HHMMSS/`.
