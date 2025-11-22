@@ -6,19 +6,19 @@ from typing import List, Dict, Any
 from . import downloader as dl
 from .pipeline import run_psf_two_pass, ToolMissingError
 from .exporter3 import export_and_summarize
-# Online external catalog fetchers
 from vasco.external_fetch_online import (
     fetch_gaia_neighbourhood,
     fetch_ps1_neighbourhood,
 )
-# STILTS helpers
 from vasco.mnras.xmatch_stilts import (
     xmatch_sextractor_with_gaia,
     xmatch_sextractor_with_ps1,
 )
+# Coord parsers (for sexagesimal support)
+from .utils.coords import parse_ra as _parse_ra, parse_dec as _parse_dec
 
 # ------------------------------------------------------------
-# Run dirs / overview helpers
+# Helpers
 # ------------------------------------------------------------
 
 def _build_run_dir(base: str | Path | None = None) -> Path:
@@ -89,7 +89,6 @@ def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
     sex_csv = cat_dir / 'sextractor_pass2.csv'
     if sex_csv.exists():
         return sex_csv
-    # Astropy (robust for LDAC)
     try:
         from astropy.io import fits
         import csv as pycsv
@@ -108,7 +107,7 @@ def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
                     w.writerow([r[n] for n in names])
             return sex_csv
     except Exception:
-        pass  # STILTS fallback
+        pass
     try:
         cmd = ['stilts', 'tcopy', f'in={str(pass2_ldac)}+2', f'out={str(sex_csv)}', 'ofmt=csv']
         subprocess.run(cmd, check=True)
@@ -117,7 +116,7 @@ def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
         raise RuntimeError(f'Failed to export LDAC to CSV via Astropy or STILTS: {e}')
 
 # ------------------------------------------------------------
-# CSV header RA/Dec presence check (includes PS1 mean names)
+# CSV header RA/Dec presence check
 # ------------------------------------------------------------
 
 def _csv_has_radec(csv_path: Path) -> bool:
@@ -137,7 +136,7 @@ def _csv_has_radec(csv_path: Path) -> bool:
         return False
 
 # ------------------------------------------------------------
-# Post-xmatch per tile (Gaia/PS1 independent)
+# Post-xmatch per tile
 # ------------------------------------------------------------
 
 def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 2.0) -> None:
@@ -147,7 +146,6 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 2.0) -> No
     sex_csv = _ensure_sextractor_csv(tile_dir, pass2_ldac)
     gaia_csv = tile_dir / 'catalogs' / 'gaia_neighbourhood.csv'
     ps1_csv = tile_dir / 'catalogs' / 'ps1_neighbourhood.csv'
-    # Gaia independent
     try:
         if gaia_csv.exists() and _csv_has_radec(gaia_csv):
             out_gaia = xdir / 'sex_gaia_xmatch.csv'
@@ -157,7 +155,6 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 2.0) -> No
             print('[POST][WARN]', tile_dir.name, 'Gaia CSV missing or lacks RA/Dec → skipped')
     except Exception as e:
         print('[POST][WARN]', tile_dir.name, 'Gaia xmatch failed:', e)
-    # PS1 independent
     try:
         if ps1_csv.exists() and _csv_has_radec(ps1_csv):
             out_ps1 = xdir / 'sex_ps1_xmatch.csv'
@@ -169,6 +166,22 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 2.0) -> No
         print('[POST][WARN]', tile_dir.name, 'PS1 xmatch failed:', e)
 
 # ------------------------------------------------------------
+# Sexagesimal helpers
+# ------------------------------------------------------------
+
+def _to_float_ra(val: str | float) -> float:
+    try:
+        return float(val)
+    except Exception:
+        return float(_parse_ra(str(val)))
+
+def _to_float_dec(val: str | float) -> float:
+    try:
+        return float(val)
+    except Exception:
+        return float(_parse_dec(str(val)))
+
+# ------------------------------------------------------------
 # Commands
 # ------------------------------------------------------------
 
@@ -177,20 +190,21 @@ def cmd_one(args: argparse.Namespace) -> int:
     lg = dl.configure_logger(run_dir / 'logs')
     out_raw = run_dir / 'raw'; out_raw.mkdir(parents=True, exist_ok=True)
 
-    # STScI-only fetch; skip tile if non-POSS is returned
+    ra = _to_float_ra(args.ra)
+    dec = _to_float_dec(args.dec)
+
     try:
-        fits = dl.fetch_skyview_dss(args.ra, args.dec, size_arcmin=args.size_arcmin,
+        fits = dl.fetch_skyview_dss(ra, dec, size_arcmin=args.size_arcmin,
             survey=args.survey, pixel_scale_arcsec=args.pixel_scale_arcsec,
             out_dir=out_raw, basename=None, logger=lg)
     except RuntimeError as e:
         if 'Non-POSS plate returned by STScI' in str(e):
-            print('[SKIP]', f'RA={args.ra:.6f}', f'Dec={args.dec:.6f}',
+            print('[SKIP]', f'RA={ra:.6f}', f'Dec={dec:.6f}',
                   '-> non-POSS plate; tile omitted to preserve strict provenance.')
-            # Write minimal artifacts so CLI exits cleanly
             results: list[dict] = []
             counts = {'planned': 1, 'downloaded': 0, 'processed': 0}
-            missing = [{'ra': float(args.ra), 'dec': float(args.dec),
-                        'expected_stem': _expected_stem(args.ra, args.dec, args.survey, args.size_arcmin)}]
+            missing = [{'ra': float(ra), 'dec': float(dec),
+                        'expected_stem': _expected_stem(ra, dec, args.survey, args.size_arcmin)}]
             _write_json(run_dir / 'RUN_INDEX.json', results)
             _write_json(run_dir / 'RUN_COUNTS.json', counts)
             _write_json(run_dir / 'RUN_MISSING.json', missing)
@@ -210,21 +224,19 @@ def cmd_one(args: argparse.Namespace) -> int:
 
     export_and_summarize(p2, td, export=args.export, histogram_col=args.hist_col)
 
-    # Online external fetch (Gaia via CDS/VizieR, PS1 via MAST)
     radius_arcmin = args.size_arcmin * (2 ** 0.5) * 0.5
     try:
-        fetch_gaia_neighbourhood(td, args.ra, args.dec, radius_arcmin)
+        fetch_gaia_neighbourhood(td, ra, dec, radius_arcmin)
     except Exception as e:
         print('[POST][WARN]', td.name, 'Gaia fetch failed:', e)
     try:
         if os.getenv('VASCO_DISABLE_PS1'):
             print('[POST][INFO]', td.name, 'PS1 disabled by env — skipping fetch')
         else:
-            fetch_ps1_neighbourhood(td, args.ra, args.dec, radius_arcmin)
+            fetch_ps1_neighbourhood(td, ra, dec, radius_arcmin)
     except Exception as e:
         print('[POST][WARN]', td.name, 'PS1 fetch failed:', e)
 
-    # Post-xmatch (resilient)
     try:
         _post_xmatch_tile(td, p2, radius_arcsec=2.0)
     except Exception as e:
@@ -247,7 +259,10 @@ def cmd_tess(args: argparse.Namespace) -> int:
     lg = dl.configure_logger(run_dir / 'logs')
     out_raw = run_dir / 'raw'; out_raw.mkdir(parents=True, exist_ok=True)
 
-    centers = dl.tessellate_centers(args.center_ra, args.center_dec,
+    center_ra = _to_float_ra(args.center_ra)
+    center_dec = _to_float_dec(args.center_dec)
+
+    centers = dl.tessellate_centers(center_ra, center_dec,
         width_arcmin=args.width_arcmin, height_arcmin=args.height_arcmin,
         tile_radius_arcmin=args.tile_radius_arcmin, overlap_arcmin=args.overlap_arcmin)
     planned = len(centers)
@@ -267,7 +282,6 @@ def cmd_tess(args: argparse.Namespace) -> int:
             continue
         export_and_summarize(p2, td, export=args.export, histogram_col=args.hist_col)
 
-        # Online external fetch per tile
         radius_arcmin = args.size_arcmin * (2 ** 0.5) * 0.5
         try:
             parts = stem.split('_')
@@ -311,58 +325,7 @@ def cmd_tess(args: argparse.Namespace) -> int:
     return 0
 
 # ------------------------------------------------------------
-# CLI
-# ------------------------------------------------------------
-
-def main(argv: List[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog='vasco.cli_pipeline', description='VASCO pipeline orchestrator (download + 2-pass + export + QA + post-xmatch)')
-    sub = p.add_subparsers(dest='cmd')
-    one = sub.add_parser('one2pass', help='One RA/Dec -> download -> two-pass pipeline (auto fetch + post-xmatch)')
-    one.add_argument('--ra', type=float, required=True)
-    one.add_argument('--dec', type=float, required=True)
-    one.add_argument('--size-arcmin', type=float, default=60.0)
-    one.add_argument('--survey', default='dss1-red')
-    one.add_argument('--pixel-scale-arcsec', type=float, default=1.7)
-    one.add_argument('--export', choices=['none','csv','parquet','both'], default='csv')
-    one.add_argument('--hist-col', default='FWHM_IMAGE')
-    one.add_argument('--workdir', default=None)
-    one.set_defaults(func=cmd_one)
-
-    tess = sub.add_parser('tess2pass', help='Tessellate region and run two-pass pipeline per tile (auto fetch + post-xmatch)')
-    tess.add_argument('--center-ra', type=float, required=True)
-    tess.add_argument('--center-dec', type=float, required=True)
-    tess.add_argument('--width-arcmin', type=float, required=True)
-    tess.add_argument('--height-arcmin', type=float, required=True)
-    tess.add_argument('--tile-radius-arcmin', type=float, default=30.0)
-    tess.add_argument('--overlap-arcmin', type=float, default=0.0)
-    tess.add_argument('--size-arcmin', type=float, default=60.0)
-    tess.add_argument('--survey', default='dss1-red')
-    tess.add_argument('--pixel-scale-arcsec', type=float, default=1.7)
-    tess.add_argument('--export', choices=['none','csv','parquet','both'], default='csv')
-    tess.add_argument('--hist-col', default='FWHM_IMAGE')
-    tess.add_argument('--workdir', default=None)
-    tess.set_defaults(func=cmd_tess)
-
-    rt = sub.add_parser('retry-missing', help='Retry tiles for an existing run (auto fetch + post-xmatch)')
-    rt.add_argument('run_dir', help='Existing run directory (data/runs/run-YYYYMMDD_HHMMSS)')
-    rt.add_argument('--survey', default='dss1-red')
-    rt.add_argument('--size-arcmin', type=float, default=60.0)
-    rt.add_argument('--pixel-scale-arcsec', type=float, default=1.7)
-    rt.add_argument('--attempts', type=int, default=4)
-    rt.add_argument('--backoff-base', type=float, default=1.0)
-    rt.add_argument('--backoff-cap', type=float, default=8.0)
-    rt.add_argument('--export', choices=['none','csv','parquet','both'], default='csv')
-    rt.add_argument('--hist-col', default='FWHM_IMAGE')
-    rt.set_defaults(func=cmd_retry_missing)
-
-    args = p.parse_args(argv)
-    if hasattr(args, 'func'):
-        return args.func(args)
-    p.print_help()
-    return 0
-
-# ------------------------------------------------------------
-# retry-missing command (unchanged)
+# retry-missing command (restored)
 # ------------------------------------------------------------
 
 def _retry_sleep(attempt: int, base: float, cap: float) -> None:
@@ -414,7 +377,6 @@ def cmd_retry_missing(args: argparse.Namespace) -> int:
         try:
             p1, psf, p2 = run_psf_two_pass(fp, td, config_root='configs')
             export_and_summarize(p2, td, export=args.export, histogram_col=args.hist_col)
-            # Online fetch + post-xmatch
             radius_arcmin = args.size_arcmin * (2 ** 0.5) * 0.5
             try:
                 parts = stem.split('_')
@@ -454,6 +416,58 @@ def cmd_retry_missing(args: argparse.Namespace) -> int:
     _write_overview(run_dir, counts, results, still_missing)
     print('Run directory:', run_dir)
     print(f"Recovered tiles: {len(recovered)} Remaining missing: {len(still_missing)}")
+    return 0
+
+# ------------------------------------------------------------
+# CLI
+# ------------------------------------------------------------
+
+def main(argv: List[str] | None = None) -> int:
+    p = argparse.ArgumentParser(prog='vasco.cli_pipeline', description='VASCO pipeline orchestrator (download + 2-pass + export + QA + post-xmatch)')
+    sub = p.add_subparsers(dest='cmd')
+
+    one = sub.add_parser('one2pass', help='One RA/Dec -> download -> two-pass pipeline (auto fetch + post-xmatch)')
+    one.add_argument('--ra', type=str, required=True, help='RA in decimal deg or sexagesimal hh:mm:ss.s')
+    one.add_argument('--dec', type=str, required=True, help='Dec in decimal deg or sexagesimal ±dd:mm:ss.s')
+    one.add_argument('--size-arcmin', type=float, default=60.0)
+    one.add_argument('--survey', default='dss1-red')
+    one.add_argument('--pixel-scale-arcsec', type=float, default=1.7)
+    one.add_argument('--export', choices=['none','csv','parquet','both'], default='csv')
+    one.add_argument('--hist-col', default='FWHM_IMAGE')
+    one.add_argument('--workdir', default=None)
+    one.set_defaults(func=cmd_one)
+
+    tess = sub.add_parser('tess2pass', help='Tessellate region and run two-pass pipeline per tile (auto fetch + post-xmatch)')
+    tess.add_argument('--center-ra', type=str, required=True, help='Center RA in decimal deg or sexagesimal hh:mm:ss.s')
+    tess.add_argument('--center-dec', type=str, required=True, help='Center Dec in decimal deg or sexagesimal ±dd:mm:ss.s')
+    tess.add_argument('--width-arcmin', type=float, required=True)
+    tess.add_argument('--height-arcmin', type=float, required=True)
+    tess.add_argument('--tile-radius-arcmin', type=float, default=30.0)
+    tess.add_argument('--overlap-arcmin', type=float, default=0.0)
+    tess.add_argument('--size-arcmin', type=float, default=60.0)
+    tess.add_argument('--survey', default='dss1-red')
+    tess.add_argument('--pixel-scale-arcsec', type=float, default=1.7)
+    tess.add_argument('--export', choices=['none','csv','parquet','both'], default='csv')
+    tess.add_argument('--hist-col', default='FWHM_IMAGE')
+    tess.add_argument('--workdir', default=None)
+    tess.set_defaults(func=cmd_tess)
+
+    rt = sub.add_parser('retry-missing', help='Retry tiles for an existing run (auto fetch + post-xmatch)')
+    rt.add_argument('run_dir', help='Existing run directory (data/runs/run-YYYYMMDD_HHMMSS)')
+    rt.add_argument('--survey', default='dss1-red')
+    rt.add_argument('--size-arcmin', type=float, default=60.0)
+    rt.add_argument('--pixel-scale-arcsec', type=float, default=1.7)
+    rt.add_argument('--attempts', type=int, default=4)
+    rt.add_argument('--backoff-base', type=float, default=1.0)
+    rt.add_argument('--backoff-cap', type=float, default=8.0)
+    rt.add_argument('--export', choices=['none','csv','parquet','both'], default='csv')
+    rt.add_argument('--hist-col', default='FWHM_IMAGE')
+    rt.set_defaults(func=cmd_retry_missing)
+
+    args = p.parse_args(argv)
+    if hasattr(args, 'func'):
+        return args.func(args)
+    p.print_help()
     return 0
 
 if __name__ == '__main__':
