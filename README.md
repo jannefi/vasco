@@ -1,18 +1,18 @@
-# VASCO v0.06.91 — PSF-aware 2-pass pipeline (release 22-Nov-2025)
+# VASCO v0.06.91 — PSF-aware 2-pass pipeline (release 23-Nov-2025)
 
 Added possibility to use Vizier for downloading USNO-B data. 
 
 Changed the downloader logic so that only POSSI-E/POSS-I images are allowed. Other images are dismissed. Example coordinates updated. Fallback to SkyView was removed.
 
-This package lets you run the VASCO two-pass **SExtractor → PSFEx → SExtractor** pipeline on DSS tiles, with a robust downloader (SkyView fallback + STScI DSS), exports (ECSV+CSV/Parquet), and automation via `run.sh` (tessellation, post-run summary, and retry logic).
+This package lets you run the VASCO two-pass **SExtractor → PSFEx → SExtractor** pipeline on DSS tiles, with a robust downloader (SkyView fallback + STScI DSS), exports (ECSV+CSV/Parquet)
 
 **Key features**
 - Robust FITS downloader: **STScI DSS**. (Pixels → Size) with content validation; fallback to **SkyView**. Non-FITS saved as `.html` for inspection. *(SkyView Batch/Query and STScI DSS CGI are documented here:)* [SkyView Batch](https://skyview.gsfc.nasa.gov/current/docs/batchpage.html), [SkyView Query](https://skyview.gsfc.nasa.gov/current/cgi/query.pl), [STScI DSS search](https://stdatu.stsci.edu/dss/script_usage.html).
 - **Two-pass PSF-aware** photometry with SExtractor/PSFEx.
 - Orchestrator writes `RUN_COUNTS.json`, `RUN_INDEX.json`, **`RUN_OVERVIEW.md`**, and **`RUN_MISSING.json`** (planned/downloaded/processed + missing list).
-- `run.sh` with **post-run summary**, **exit policy** (configurable), **`--retry-missing`**, and **`--retry-after`** (auto-retry missing right away).
 
-> **Requires**: `sextractor` (or `sex`), stilts and `psfex` on PATH. On macOS: `brew install sextractor psfex`. Python deps: `astropy`, `requests`, `numpy`, `matplotlib` (and optionally `pandas`, `pyarrow`).
+> **Requires**: `sextractor` (or `sex`), `stilts` and `psfex` on PATH. 
+On macOS: `brew install sextractor psfex`. Python deps: `astropy`, `requests`, `numpy`, `matplotlib` (and optionally `pandas`, `pyarrow`).
 
 ## Install
 ```bash
