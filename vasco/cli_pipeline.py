@@ -2,19 +2,27 @@
 from __future__ import annotations
 import argparse, json, time, subprocess, os
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
+
 from . import downloader as dl
 from .pipeline import run_psf_two_pass, ToolMissingError
 from .exporter3 import export_and_summarize
+
+# External catalog fetchers (existing)
 from vasco.external_fetch_online import (
     fetch_gaia_neighbourhood,
     fetch_ps1_neighbourhood,
 )
+# USNO-B1.0 via VizieR (Astroquery)
+from vasco.external_fetch_usnob_vizier import fetch_usnob_neighbourhood
+
+# STILTS xmatch helpers (Gaia/PS1)
 from vasco.mnras.xmatch_stilts import (
     xmatch_sextractor_with_gaia,
     xmatch_sextractor_with_ps1,
 )
-# Coord parsers (for sexagesimal support)
+
+# Sexagesimal parsers
 from .utils.coords import parse_ra as _parse_ra, parse_dec as _parse_dec
 
 # ------------------------------------------------------------
@@ -116,7 +124,7 @@ def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
         raise RuntimeError(f'Failed to export LDAC to CSV via Astropy or STILTS: {e}')
 
 # ------------------------------------------------------------
-# CSV header RA/Dec presence check
+# CSV header RA/Dec presence check / detection
 # ------------------------------------------------------------
 
 def _csv_has_radec(csv_path: Path) -> bool:
@@ -127,7 +135,8 @@ def _csv_has_radec(csv_path: Path) -> bool:
             cols = {h.strip() for h in hdr}
             for a, b in [
                 ('ra','dec'), ('RA_ICRS','DE_ICRS'), ('RAJ2000','DEJ2000'),
-                ('RA','DEC'), ('lon','lat'), ('raMean','decMean'), ('RAMean','DecMean')
+                ('RA','DEC'), ('lon','lat'), ('raMean','decMean'), ('RAMean','DecMean'),
+                ('ALPHA_J2000','DELTA_J2000')
             ]:
                 if a in cols and b in cols:
                     return True
@@ -135,8 +144,29 @@ def _csv_has_radec(csv_path: Path) -> bool:
     except Exception:
         return False
 
+def _detect_radec_columns(csv_path: Path) -> Tuple[str, str] | None:
+    """Return (ra_col, dec_col) by scanning header for common RA/Dec pairs."""
+    import csv
+    try:
+        with open(csv_path, newline='') as f:
+            hdr = next(csv.reader(f))
+            cols = [h.strip() for h in hdr]
+        pairs = [
+            ('ALPHA_J2000','DELTA_J2000'),
+            ('RAJ2000','DEJ2000'),
+            ('RA_ICRS','DE_ICRS'),
+            ('ra','dec'), ('RA','DEC'), ('lon','lat'),
+            ('raMean','decMean'), ('RAMean','DecMean')
+        ]
+        for a,b in pairs:
+            if a in cols and b in cols:
+                return a,b
+        return None
+    except Exception:
+        return None
+
 # ------------------------------------------------------------
-# Post-xmatch per tile
+# Post-xmatch per tile (Gaia/PS1) + USNO-B (new)
 # ------------------------------------------------------------
 
 def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 2.0) -> None:
@@ -144,8 +174,15 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 2.0) -> No
     xdir = tile_dir / 'xmatch'
     xdir.mkdir(parents=True, exist_ok=True)
     sex_csv = _ensure_sextractor_csv(tile_dir, pass2_ldac)
+
+    # Detect RA/Dec columns in SExtractor CSV (for custom xmatch operations)
+    sex_cols = _detect_radec_columns(sex_csv)
+
     gaia_csv = tile_dir / 'catalogs' / 'gaia_neighbourhood.csv'
     ps1_csv = tile_dir / 'catalogs' / 'ps1_neighbourhood.csv'
+    usnob_csv = tile_dir / 'catalogs' / 'usnob_neighbourhood.csv'
+
+    # Gaia
     try:
         if gaia_csv.exists() and _csv_has_radec(gaia_csv):
             out_gaia = xdir / 'sex_gaia_xmatch.csv'
@@ -155,6 +192,8 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 2.0) -> No
             print('[POST][WARN]', tile_dir.name, 'Gaia CSV missing or lacks RA/Dec → skipped')
     except Exception as e:
         print('[POST][WARN]', tile_dir.name, 'Gaia xmatch failed:', e)
+
+    # PS1
     try:
         if ps1_csv.exists() and _csv_has_radec(ps1_csv):
             out_ps1 = xdir / 'sex_ps1_xmatch.csv'
@@ -164,6 +203,34 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 2.0) -> No
             print('[POST][WARN]', tile_dir.name, 'PS1 CSV missing or lacks RA/Dec → skipped')
     except Exception as e:
         print('[POST][WARN]', tile_dir.name, 'PS1 xmatch failed:', e)
+
+    # USNO-B (VizieR I/284): local STILTS-based xmatch using RAJ2000/DEJ2000
+    try:
+        if usnob_csv.exists() and _csv_has_radec(usnob_csv):
+            # Detect RA/Dec col names in both tables
+            usnob_cols = _detect_radec_columns(usnob_csv) or ('RAJ2000','DEJ2000')
+            if sex_cols is None:
+                # Fall back to common SExtractor names
+                sex_cols = ('ALPHA_J2000','DELTA_J2000')
+            ra1, dec1 = sex_cols
+            ra2, dec2 = usnob_cols
+            out_usnob = xdir / 'sex_usnob_xmatch.csv'
+            # Build STILTS command
+            cmd = [
+                'stilts', 'tskymatch2',
+                f'in1={str(sex_csv)}', f'in2={str(usnob_csv)}',
+                f'ra1={ra1}', f'dec1={dec1}', f'ra2={ra2}', f'dec2={dec2}',
+                f'error={radius_arcsec}', 'join=1and2',
+                f'out={str(out_usnob)}', 'ofmt=csv'
+            ]
+            subprocess.run(cmd, check=True)
+            print('[POST]', tile_dir.name, 'USNO-B xmatch ->', out_usnob)
+        else:
+            print('[POST][WARN]', tile_dir.name, 'USNO-B CSV missing or lacks RA/Dec → skipped')
+    except FileNotFoundError:
+        print('[POST][WARN]', tile_dir.name, 'STILTS not found; USNO-B xmatch skipped')
+    except Exception as e:
+        print('[POST][WARN]', tile_dir.name, 'USNO-B xmatch failed:', e)
 
 # ------------------------------------------------------------
 # Sexagesimal helpers
@@ -193,6 +260,7 @@ def cmd_one(args: argparse.Namespace) -> int:
     ra = _to_float_ra(args.ra)
     dec = _to_float_dec(args.dec)
 
+    # STScI-only download; strict POSS-I enforcement (skip non-POSS tiles)
     try:
         fits = dl.fetch_skyview_dss(ra, dec, size_arcmin=args.size_arcmin,
             survey=args.survey, pixel_scale_arcsec=args.pixel_scale_arcsec,
@@ -224,11 +292,16 @@ def cmd_one(args: argparse.Namespace) -> int:
 
     export_and_summarize(p2, td, export=args.export, histogram_col=args.hist_col)
 
+    # Neighbourhood radius = inscribed circle of the square tile
     radius_arcmin = args.size_arcmin * (2 ** 0.5) * 0.5
+
+    # Gaia
     try:
         fetch_gaia_neighbourhood(td, ra, dec, radius_arcmin)
     except Exception as e:
         print('[POST][WARN]', td.name, 'Gaia fetch failed:', e)
+
+    # PS1
     try:
         if os.getenv('VASCO_DISABLE_PS1'):
             print('[POST][INFO]', td.name, 'PS1 disabled by env — skipping fetch')
@@ -237,6 +310,17 @@ def cmd_one(args: argparse.Namespace) -> int:
     except Exception as e:
         print('[POST][WARN]', td.name, 'PS1 fetch failed:', e)
 
+    # USNO-B1.0 (VizieR I/284)
+    try:
+        if os.getenv('VASCO_DISABLE_USNOB'):
+            print('[POST][INFO]', td.name, 'USNO-B disabled by env — skipping fetch')
+        else:
+            fetch_usnob_neighbourhood(td, ra, dec, radius_arcmin)
+            print('[POST]', td.name, 'USNO-B (VizieR) -> catalogs/usnob_neighbourhood.csv')
+    except Exception as e:
+        print('[POST][WARN]', td.name, 'USNO-B fetch failed:', e)
+
+    # Post xmatch (Gaia/PS1 + USNO-B)
     try:
         _post_xmatch_tile(td, p2, radius_arcsec=2.0)
     except Exception as e:
@@ -245,10 +329,12 @@ def cmd_one(args: argparse.Namespace) -> int:
     results = [{'tile': Path(fits).stem, 'pass1': p1, 'psf': psf, 'pass2': p2}]
     counts = {'planned': 1, 'downloaded': 1, 'processed': 1}
     missing: list[dict] = []
+
     _write_json(run_dir / 'RUN_INDEX.json', results)
     _write_json(run_dir / 'RUN_COUNTS.json', counts)
     _write_json(run_dir / 'RUN_MISSING.json', missing)
     _write_overview(run_dir, counts, results, missing)
+
     print('Run directory:', run_dir)
     print('Planned tiles:', counts['planned'], 'Downloaded:', counts['downloaded'], 'Processed:', counts['processed'])
     return 0
@@ -280,18 +366,26 @@ def cmd_tess(args: argparse.Namespace) -> int:
         except ToolMissingError as e:
             print('[ERROR]', e)
             continue
+
         export_and_summarize(p2, td, export=args.export, histogram_col=args.hist_col)
 
+        # Neighbourhood radius
         radius_arcmin = args.size_arcmin * (2 ** 0.5) * 0.5
+
+        # Derive RA/Dec from filename or fallback
         try:
             parts = stem.split('_')
             ra_t = float(parts[1]); dec_t = float(parts[2])
         except Exception:
             ra_t, dec_t = centers[0]
+
+        # Gaia
         try:
             fetch_gaia_neighbourhood(td, ra_t, dec_t, radius_arcmin)
         except Exception as e:
             print('[POST][WARN]', td.name, 'Gaia fetch failed:', e)
+
+        # PS1
         try:
             if os.getenv('VASCO_DISABLE_PS1'):
                 print('[POST][INFO]', td.name, 'PS1 disabled by env — skipping fetch')
@@ -299,10 +393,23 @@ def cmd_tess(args: argparse.Namespace) -> int:
                 fetch_ps1_neighbourhood(td, ra_t, dec_t, radius_arcmin)
         except Exception as e:
             print('[POST][WARN]', td.name, 'PS1 fetch failed:', e)
+
+        # USNO-B1.0 (VizieR I/284)
+        try:
+            if os.getenv('VASCO_DISABLE_USNOB'):
+                print('[POST][INFO]', td.name, 'USNO-B disabled by env — skipping fetch')
+            else:
+                fetch_usnob_neighbourhood(td, ra_t, dec_t, radius_arcmin)
+                print('[POST]', td.name, 'USNO-B (VizieR) -> catalogs/usnob_neighbourhood.csv')
+        except Exception as e:
+            print('[POST][WARN]', td.name, 'USNO-B fetch failed:', e)
+
+        # Post xmatch (Gaia/PS1 + USNO-B)
         try:
             _post_xmatch_tile(td, p2, radius_arcsec=2.0)
         except Exception as e:
             print('[POST][WARN] xmatch failed for', td.name, ':', e)
+
         results.append({'tile': stem, 'pass1': p1, 'psf': psf, 'pass2': p2})
 
     processed = len(results)
@@ -314,10 +421,12 @@ def cmd_tess(args: argparse.Namespace) -> int:
             missing.append({'ra': float(ra), 'dec': float(dec), 'expected_stem': exp_stem})
 
     counts = {'planned': planned, 'downloaded': downloaded, 'processed': processed}
+
     _write_json(run_dir / 'RUN_INDEX.json', results)
     _write_json(run_dir / 'RUN_COUNTS.json', counts)
     _write_json(run_dir / 'RUN_MISSING.json', missing)
     _write_overview(run_dir, counts, results, missing)
+
     print('Run directory:', run_dir)
     print('Planned tiles:', planned, 'Downloaded:', downloaded, 'Processed:', processed)
     if missing:
@@ -325,7 +434,7 @@ def cmd_tess(args: argparse.Namespace) -> int:
     return 0
 
 # ------------------------------------------------------------
-# retry-missing command (restored)
+# retry-missing command
 # ------------------------------------------------------------
 
 def _retry_sleep(attempt: int, base: float, cap: float) -> None:
@@ -334,18 +443,22 @@ def _retry_sleep(attempt: int, base: float, cap: float) -> None:
     delay *= (0.8 + 0.4 * random.random())
     _t.sleep(delay)
 
+
 def cmd_retry_missing(args: argparse.Namespace) -> int:
     run_dir = Path(args.run_dir).resolve()
     if not run_dir.exists():
         print('[ERROR] run dir not found:', run_dir)
         return 2
+
     counts_path = run_dir / 'RUN_COUNTS.json'
     missing_path = run_dir / 'RUN_MISSING.json'
     index_path = run_dir / 'RUN_INDEX.json'
+
     if not missing_path.exists():
         print('[INFO] No RUN_MISSING.json found. Nothing to retry.')
         print('Run directory:', run_dir)
         return 0
+
     try:
         counts = _read_json(counts_path) if counts_path.exists() else {'planned':0,'downloaded':0,'processed':0}
         missing = _read_json(missing_path)
@@ -353,11 +466,13 @@ def cmd_retry_missing(args: argparse.Namespace) -> int:
     except Exception as e:
         print('[ERROR] cannot read run artifacts:', e)
         return 2
+
     lg = dl.configure_logger(run_dir / 'logs')
     out_raw = run_dir / 'raw'; out_raw.mkdir(parents=True, exist_ok=True)
 
     recovered: list[dict] = []
     still_missing: list[dict] = []
+
     for rec in missing:
         ra = float(rec['ra']); dec = float(rec['dec'])
         ok = False; fp = None
@@ -372,17 +487,20 @@ def cmd_retry_missing(args: argparse.Namespace) -> int:
                 _retry_sleep(attempt, args.backoff_base, args.backoff_cap)
         if not ok or fp is None:
             still_missing.append(rec); continue
+
         stem = Path(fp).stem
         td = _tile_dir(run_dir, stem)
         try:
             p1, psf, p2 = run_psf_two_pass(fp, td, config_root='configs')
             export_and_summarize(p2, td, export=args.export, histogram_col=args.hist_col)
+
             radius_arcmin = args.size_arcmin * (2 ** 0.5) * 0.5
             try:
                 parts = stem.split('_')
                 ra_t = float(parts[1]); dec_t = float(parts[2])
             except Exception:
                 ra_t, dec_t = ra, dec
+
             try:
                 fetch_gaia_neighbourhood(td, ra_t, dec_t, radius_arcmin)
             except Exception as e:
@@ -395,9 +513,18 @@ def cmd_retry_missing(args: argparse.Namespace) -> int:
             except Exception as e:
                 print('[POST][WARN]', td.name, 'PS1 fetch failed:', e)
             try:
+                if os.getenv('VASCO_DISABLE_USNOB'):
+                    print('[POST][INFO]', td.name, 'USNO-B disabled by env — skipping fetch')
+                else:
+                    fetch_usnob_neighbourhood(td, ra_t, dec_t, radius_arcmin)
+                    print('[POST]', td.name, 'USNO-B (VizieR) -> catalogs/usnob_neighbourhood.csv')
+            except Exception as e:
+                print('[POST][WARN]', td.name, 'USNO-B fetch failed:', e)
+            try:
                 _post_xmatch_tile(td, p2, radius_arcsec=2.0)
             except Exception as e:
                 print('[POST][WARN] xmatch failed for', td.name, ':', e)
+
             results.append({'tile': stem, 'pass1': p1, 'psf': psf, 'pass2': p2})
             recovered.append({'ra': ra, 'dec': dec, 'expected_stem': stem})
         except ToolMissingError as e:
@@ -414,6 +541,7 @@ def cmd_retry_missing(args: argparse.Namespace) -> int:
     _write_json(counts_path, counts)
     _write_json(missing_path, still_missing)
     _write_overview(run_dir, counts, results, still_missing)
+
     print('Run directory:', run_dir)
     print(f"Recovered tiles: {len(recovered)} Remaining missing: {len(still_missing)}")
     return 0

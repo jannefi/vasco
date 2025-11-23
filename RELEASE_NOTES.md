@@ -1,4 +1,7 @@
-# VASCO v0.06.9 — PS1+Gaia x‑match hardening + USNO B.10, bright star mask
+# VASCO v0.06.91 — PS1+Gaia x‑match hardening + USNO B.10, bright star mask
+
+**Highlights**
+- Possibility to get USNO-B data via VizieR I/284 
 
 **Highlights**
 - Sub‑second PS1 mean-table fetches using explicit columns + small degree radii.
@@ -7,9 +10,12 @@
 
 **New env knobs**
 ```bash
+# disable USNO-B download via MAST
+export VASCO_DISABLE_PS1=1
+# disable USNO-B download via Vizier
+export VASCO_DISABLE_USNOB=1
 # Fast PS1 for dev runs (0.5 arcmin radius)
 export VASCO_PS1_RADIUS_DEG=0.00833333
 export VASCO_PS1_TIMEOUT=12
 export VASCO_PS1_ATTEMPTS=2
-# Optional: disable PS1 entirely while iterating
-# export VASCO_DISABLE_PS1=1
+```
