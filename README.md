@@ -1,4 +1,6 @@
-# VASCO v0.06.9 — PSF-aware 2-pass pipeline (release 22-Nov-2025)
+# VASCO v0.06.91 — PSF-aware 2-pass pipeline (release 22-Nov-2025)
+
+Added possibility to use Vizier for downloading USNO-B data. 
 
 Changed the downloader logic so that only POSSI-E/POSS-I images are allowed. Other images are dismissed. Example coordinates updated. Fallback to SkyView was removed.
 

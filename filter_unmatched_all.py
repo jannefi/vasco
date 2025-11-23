@@ -2,6 +2,7 @@
 import pandas as pd
 from pathlib import Path
 import sys
+import subprocess
 
 RUN_ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/runs")
 
@@ -20,22 +21,74 @@ def filter_unmatched(xmatch_csv, candidates, out_name):
         print("[WARN] RA/Dec columns not found in:", xmatch_csv)
         return
     ra, de = pair
-    # unmatched = missing/non-numeric RA/Dec
-    # pandas: isna() handles nulls; to catch blanks, add .str.strip()=='' for object dtype
+    # NOTE: with join=1and2 xmatch files contain matched rows only.
+    # The following will usually be empty unless your xmatch file includes unmatched rows.
     unmatched = df[df[ra].isna() | df[de].isna()]
     out = xmatch_csv.parent / out_name
     unmatched.to_csv(out, index=False)
     print("[INFO] Unmatched ->", out)
 
+def make_unmatched_with_stilts(sex_csv, neigh_csv, out_csv, ra1, dec1, ra2, dec2, radius_arcsec=2.0):
+    if not (sex_csv.exists() and neigh_csv.exists()):
+        return
+    cmd = [
+        "stilts", "tskymatch2",
+        f"in1={str(sex_csv)}", f"in2={str(neigh_csv)}",
+        f"ra1={ra1}", f"dec1={dec1}", f"ra2={ra2}", f"dec2={dec2}",
+        f"error={radius_arcsec}", "join=1not2",
+        f"out={str(out_csv)}", "ofmt=csv"
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+        print("[INFO] STILTS unmatched ->", out_csv)
+    except Exception as e:
+        print("[WARN] STILTS unmatched failed:", e)
+
+# Gaia
 for xmatch in RUN_ROOT.glob("run-*/tiles/*/xmatch/sex_gaia_xmatch.csv"):
-    filter_unmatched(xmatch,
-        candidates=[("RA_ICRS","DE_ICRS"), ("RAJ2000","DEJ2000"),
-                    ("ra","dec"), ("RA","DEC")],
-        out_name="sex_gaia_unmatched.csv")
+    # Optional: pure filter (likely empty for join=1and2)
+    filter_unmatched(
+        xmatch,
+        candidates=[("RA_ICRS","DE_ICRS"), ("RAJ2000","DEJ2000"), ("ra","dec"), ("RA","DEC")],
+        out_name="sex_gaia_unmatched.csv"
+    )
+    # Recommended: build unmatched explicitly via STILTS
+    tile_dir = xmatch.parent.parent
+    sex_csv = tile_dir / "catalogs" / "sextractor_pass2.csv"
+    gaia_csv = tile_dir / "catalogs" / "gaia_neighbourhood.csv"
+    out_csv = xmatch.parent / "sex_gaia_unmatched.csv"
+    make_unmatched_with_stilts(sex_csv, gaia_csv, out_csv,
+                               ra1="ALPHA_J2000", dec1="DELTA_J2000",
+                               ra2="RA_ICRS", dec2="DE_ICRS")
 
+# PS1
 for xmatch in RUN_ROOT.glob("run-*/tiles/*/xmatch/sex_ps1_xmatch.csv"):
-    filter_unmatched(xmatch,
-        candidates=[("raMean","decMean"), ("RAMean","DecMean"),
-                    ("ra","dec"), ("RA","DEC")],
-        out_name="sex_ps1_unmatched.csv")
+    filter_unmatched(
+        xmatch,
+        candidates=[("raMean","decMean"), ("RAMean","DecMean"), ("ra","dec"), ("RA","DEC")],
+        out_name="sex_ps1_unmatched.csv"
+    )
+    tile_dir = xmatch.parent.parent
+    sex_csv = tile_dir / "catalogs" / "sextractor_pass2.csv"
+    ps1_csv = tile_dir / "catalogs" / "ps1_neighbourhood.csv"
+    out_csv = xmatch.parent / "sex_ps1_unmatched.csv"
+    make_unmatched_with_stilts(sex_csv, ps1_csv, out_csv,
+                               ra1="ALPHA_J2000", dec1="DELTA_J2000",
+                               ra2="raMean", dec2="decMean")
 
+# USNO-B
+for xmatch in RUN_ROOT.glob("run-*/tiles/*/xmatch/sex_usnob_xmatch.csv"):
+    # Minimal alignment fix for detection:
+    filter_unmatched(
+        xmatch,
+        candidates=[("RAJ2000","DEJ2000"), ("RA","DEC"), ("ra","dec"), ("RA_ICRS","DE_ICRS")],
+        out_name="sex_usnob_unmatched.csv"
+    )
+    # Recommended STILTS unmatched
+    tile_dir = xmatch.parent.parent
+    sex_csv = tile_dir / "catalogs" / "sextractor_pass2.csv"
+    usnob_csv = tile_dir / "catalogs" / "usnob_neighbourhood.csv"
+    out_csv = xmatch.parent / "sex_usnob_unmatched.csv"
+    make_unmatched_with_stilts(sex_csv, usnob_csv, out_csv,
+                               ra1="ALPHA_J2000", dec1="DELTA_J2000",
+                               ra2="RAJ2000", dec2="DEJ2000")
