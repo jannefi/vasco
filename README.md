@@ -2,7 +2,7 @@
 
 
 Current randomized run test (27-Nov-2025):
-- export VASCO_DISABLE_PS1=1 - disable MAST downloads before running
+- export VASCO_DISABLE_USNOB=1 - disable Vizier downloads before running
 - python run_random.py (let it handle at least 100 tiles)
 - python ./scripts/summarize_xmatch.py ./data/runs (final matching steps)
 - python ./scripts/summarize_runs.py - produces markdown and csv report of all runs
