@@ -1,5 +1,12 @@
 # VASCO v0.06.91 — PSF-aware 2-pass pipeline (release 23-Nov-2025)
 
+
+Current randomized run test (27-Nov-2025):
+- export VASCO_DISABLE_PS1=1 - disable MAST downloads before running
+- python run_random.py (let it handle at least 100 tiles)
+- python ./scripts/summarize_xmatch.py ./data/runs (final matching steps)
+- python ./scripts/summarize_runs.py - produces markdown and csv report of all runs
+
 Added possibility to use Vizier for downloading USNO-B data. 
 
 Changed the downloader logic so that only POSSI-E/POSS-I images are allowed. Other images are dismissed. Example coordinates updated. Fallback to SkyView was removed.
