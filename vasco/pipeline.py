@@ -149,7 +149,7 @@ def run_crossmatch_with_stilts(
     sex_dec_col: str = 'DELTA_J2000',
     ext_ra_col: str = 'ra',
     ext_dec_col: str = 'dec',
-    radius_arcsec: float = 2.0,
+    radius_arcsec: float = 5.0,
 ) -> Tuple[Optional[str], Optional[str], str]:
     """
     Convert SExtractor PASS2 LDAC to CSV and cross-match with external catalogs via STILTS.
@@ -208,7 +208,7 @@ def run_psf_two_pass_and_xmatch(
     sex_dec_col: str = 'DELTA_J2000',
     ext_ra_col: str = 'ra',
     ext_dec_col: str = 'dec',
-    radius_arcsec: float = 2.0,
+    radius_arcsec: float = 5.0,
 ) -> Tuple[str, str, str, Optional[str], Optional[str], str]:
     pass1, psf, pass2 = run_psf_two_pass(fits_path, run_dir, config_root=config_root, sex_bin=sex_bin)
     x_gaia, x_ps1, sex_csv = run_crossmatch_with_stilts(
