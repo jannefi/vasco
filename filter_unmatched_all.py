@@ -12,6 +12,18 @@ def detect_cols(cols, candidates):
             return pair
     return None
 
+
+def detect_radec_columns(csv_path, candidates):
+    import csv
+    with open(csv_path, newline='') as f:
+        header = next(csv.reader(f))
+        cols = set(header)
+        for ra, dec in candidates:
+            if ra in cols and dec in cols:
+                return ra, dec
+    return None, None
+
+
 def filter_unmatched(xmatch_csv, candidates, out_name):
     if not xmatch_csv.exists():
         return
@@ -45,6 +57,7 @@ def make_unmatched_with_stilts(sex_csv, neigh_csv, out_csv, ra1, dec1, ra2, dec2
         print("[WARN] STILTS unmatched failed:", e)
 
 # Gaia
+
 for xmatch in RUN_ROOT.glob("run-*/tiles/*/xmatch/sex_gaia_xmatch.csv"):
     # Optional: pure filter (likely empty for join=1and2)
     filter_unmatched(
@@ -57,9 +70,14 @@ for xmatch in RUN_ROOT.glob("run-*/tiles/*/xmatch/sex_gaia_xmatch.csv"):
     sex_csv = tile_dir / "catalogs" / "sextractor_pass2.csv"
     gaia_csv = tile_dir / "catalogs" / "gaia_neighbourhood.csv"
     out_csv = xmatch.parent / "sex_gaia_unmatched.csv"
-    make_unmatched_with_stilts(sex_csv, gaia_csv, out_csv,
-                               ra1="ALPHA_J2000", dec1="DELTA_J2000",
-                               ra2="RA_ICRS", dec2="DE_ICRS")
+    # Detect actual RA/Dec columns in Gaia CSV
+    ra2, dec2 = detect_radec_columns(gaia_csv, [("RA_ICRS","DE_ICRS"), ("RAJ2000","DEJ2000"), ("ra","dec"), ("RA","DEC")])
+    if ra2 and dec2:
+        make_unmatched_with_stilts(sex_csv, gaia_csv, out_csv,
+                                   ra1="ALPHA_J2000", dec1="DELTA_J2000",
+                                   ra2=ra2, dec2=dec2)
+    else:
+        print(f"[WARN] Could not find RA/Dec columns in {gaia_csv}; skipping STILTS unmatched.")
 
 # PS1
 for xmatch in RUN_ROOT.glob("run-*/tiles/*/xmatch/sex_ps1_xmatch.csv"):
