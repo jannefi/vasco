@@ -29,6 +29,7 @@ MANIFEST
 # misc
 *.zip
 data/runs/
+data/*.json
 plate_tiles*
 plate_tiles.done.d/
 README_*
