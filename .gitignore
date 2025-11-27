@@ -30,6 +30,7 @@ MANIFEST
 *.zip
 data/runs/
 data/*.json
+data/run_*
 plate_tiles*
 plate_tiles.done.d/
 README_*
