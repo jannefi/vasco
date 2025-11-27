@@ -169,7 +169,7 @@ def _detect_radec_columns(csv_path: Path) -> Tuple[str, str] | None:
 # Post-xmatch per tile (Gaia/PS1) + USNO-B (new)
 # ------------------------------------------------------------
 
-def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 2.0) -> None:
+def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> None:
     tile_dir = Path(tile_dir)
     xdir = tile_dir / 'xmatch'
     xdir.mkdir(parents=True, exist_ok=True)
@@ -322,7 +322,7 @@ def cmd_one(args: argparse.Namespace) -> int:
 
     # Post xmatch (Gaia/PS1 + USNO-B)
     try:
-        _post_xmatch_tile(td, p2, radius_arcsec=2.0)
+        _post_xmatch_tile(td, p2, radius_arcsec=5.0)
     except Exception as e:
         print('[POST][WARN] xmatch failed for', td.name, ':', e)
 
@@ -406,7 +406,7 @@ def cmd_tess(args: argparse.Namespace) -> int:
 
         # Post xmatch (Gaia/PS1 + USNO-B)
         try:
-            _post_xmatch_tile(td, p2, radius_arcsec=2.0)
+            _post_xmatch_tile(td, p2, radius_arcsec=5.0)
         except Exception as e:
             print('[POST][WARN] xmatch failed for', td.name, ':', e)
 
@@ -521,7 +521,7 @@ def cmd_retry_missing(args: argparse.Namespace) -> int:
             except Exception as e:
                 print('[POST][WARN]', td.name, 'USNO-B fetch failed:', e)
             try:
-                _post_xmatch_tile(td, p2, radius_arcsec=2.0)
+                _post_xmatch_tile(td, p2, radius_arcsec=5.0)
             except Exception as e:
                 print('[POST][WARN] xmatch failed for', td.name, ':', e)
 

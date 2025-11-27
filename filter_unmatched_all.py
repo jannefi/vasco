@@ -40,7 +40,7 @@ def filter_unmatched(xmatch_csv, candidates, out_name):
     unmatched.to_csv(out, index=False)
     print("[INFO] Unmatched ->", out)
 
-def make_unmatched_with_stilts(sex_csv, neigh_csv, out_csv, ra1, dec1, ra2, dec2, radius_arcsec=2.0):
+def make_unmatched_with_stilts(sex_csv, neigh_csv, out_csv, ra1, dec1, ra2, dec2, radius_arcsec=5.0):
     if not (sex_csv.exists() and neigh_csv.exists()):
         return
     cmd = [
