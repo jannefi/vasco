@@ -1,0 +1,7 @@
+
+# Example placeholders for CDS X-Match backend.
+# Provide valid VizieR table IDs here (or via environment variables):
+# GAIA: e.g., I/350/gaiaedr3 (confirm exact ID)
+# PS1 : e.g., <PS1_DR2_VizieR_ID> 
+cds_gaia_table: "I/350/gaiaedr3"
+cds_ps1_table: "II/389/ps1_dr2"

@@ -101,6 +101,8 @@ def main():
                 "--pixel-scale-arcsec", str(PIXEL_SCALE),
                 "--export", "csv",
                 "--hist-col", "FWHM_IMAGE",
+                "--xmatch-backend", "cds",
+                "--xmatch-radius-arcsec", "5.0",
                 "--workdir", WORKDIR
             ]
             try:
@@ -114,8 +116,8 @@ def main():
             except Exception as e:
                 log.error(f"Exception running VASCO for tile RA={ra}, Dec={dec}: {e}")
 
-            log.info("Sleeping 5 seconds before next tile...")
-            time.sleep(5)
+            log.info("Sleeping 30 seconds before next tile...")
+            time.sleep(30)
 
     except KeyboardInterrupt:
         log.info("Interrupted by user. Saving progress and exiting.")

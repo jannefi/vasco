@@ -1,8 +1,10 @@
 # VASCO v0.06.91 — PSF-aware 2-pass pipeline (release 23-Nov-2025)
 
 
-Current randomized run test (27-Nov-2025):
-- export VASCO_DISABLE_USNOB=1 - disable Vizier downloads before running
+Current randomized run test (30-Nov-2025):
+- Start using Stilts CDSSkymatch
+  - export VASCO_CDS_GAIA_TABLE="I/350/gaiaedr3"
+  - export VASCO_CDS_PS1_TABLE="II/389/ps1_dr2"
 - python run_random.py (let it handle at least 100 tiles)
 - python ./scripts/filter_unmatched_all.py ./data/runs/ (final matching steps)
 - python ./scripts/summarize_runs.py - produces markdown and csv report of all runs
