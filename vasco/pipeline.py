@@ -222,3 +222,114 @@ def run_psf_two_pass_and_xmatch(
         radius_arcsec=radius_arcsec,
     )
     return pass1, psf, pass2, x_gaia, x_ps1, sex_csv
+
+
+# ------------------------------------------------------------
+# CDS X-Match (cdsskymatch) with hardwired VizieR table IDs
+# + write validation files filtered within 5 arcsec
+# ------------------------------------------------------------
+
+# Hardwired VizieR table IDs (change in code if needed later)
+GAIA_VIZIER_TABLE_ID = 'I/350/gaiaedr3'   # Gaia EDR3 (example ID; confirm exact)
+PS1_VIZIER_TABLE_ID  = 'II/389/ps1_dr2'   # Pan-STARRS DR2 (confirmed)
+
+def _run_cdsskymatch(in_table_csv: Path, out_csv: Path, *, ra_col: str, dec_col: str,
+                      cdstable: str, radius_arcsec: float = 5.0) -> None:
+    """Run STILTS cdsskymatch against a VizieR/SIMBAD table and write CSV.
+    Uses omode=out and ofmt=csv. No 'join' parameter (not supported for cdsskymatch).
+    """
+    _ensure_tool('stilts')
+    cmd = [
+        'stilts', 'cdsskymatch',
+        f'in={str(in_table_csv)}',
+        f'ra={ra_col}', f'dec={dec_col}',
+        f'cdstable={cdstable}',
+        f'radius={radius_arcsec}',
+        'find=best',
+        'omode=out',
+        f'out={str(out_csv)}',
+        'ofmt=csv',
+    ]
+    run_cmd(cmd)
+
+
+def _validate_within_5_arcsec(xmatch_csv: Path) -> Path:
+    """Create a validated CSV keeping only rows within <= 5 arcsec.
+    Assumes xmatch_csv contains 'angDist' (distance) column from CDS X‑Match.
+    We add 'angDist_arcsec = angDist*3600' (if angDist is degrees) and select <= 5.
+    Returns path to the new CSV.
+    """
+    _ensure_tool('stilts')
+    out = xmatch_csv.with_name(xmatch_csv.stem + '_within5arcsec.csv')
+    cmd = [
+        'stilts', 'tpipe',
+        f'in={str(xmatch_csv)}',
+        "cmd=addcol angDist_arcsec angDist*3600; select angDist_arcsec<=5",
+        f'out={str(out)}', 'ofmt=csv'
+    ]
+    run_cmd(cmd)
+    return out
+
+
+def run_cds_xmatch(run_dir: str | Path, pass2_ldac: str | Path, *,
+                    radius_arcsec: float = 5.0,
+                    sex_ra_col: str = 'ALPHA_J2000',
+                    sex_dec_col: str = 'DELTA_J2000') -> tuple[str | None, str | None, str]:
+    """Convert PASS2 LDAC to CSV and perform CDS X‑Match against Gaia and PS1 (hardwired IDs).
+    Also writes '*_within5arcsec.csv' validation files.
+    Returns (gaia_out, ps1_out, sextractor_csv) where gaia_out/ps1_out may be None.
+    """
+    rdir = Path(run_dir)
+    xdir = rdir / 'xmatch'
+    xdir.mkdir(parents=True, exist_ok=True)
+    sex_csv = rdir / 'catalogs' / 'sextractor_pass2.csv'
+    sex_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    # Export LDAC -> CSV (SExtractor detections)
+    export_ldac_to_csv(pass2_ldac, sex_csv)
+
+    gaia_out = None
+    ps1_out  = None
+
+    # Gaia via CDS X‑Match
+    if GAIA_VIZIER_TABLE_ID:
+        gaia_path = xdir / 'sex_gaia_xmatch_cdss.csv'
+        try:
+            _run_cdsskymatch(sex_csv, gaia_path, ra_col=sex_ra_col, dec_col=sex_dec_col,
+                              cdstable=GAIA_VIZIER_TABLE_ID, radius_arcsec=radius_arcsec)
+            logger.info('[POST][CDS] Gaia xmatch -> %s', gaia_path)
+            _validate_within_5_arcsec(gaia_path)
+            gaia_out = str(gaia_path)
+        except Exception as e:
+            logger.warning('[POST][WARN] CDS Gaia xmatch failed: %s', e)
+
+    # PS1 via CDS X‑Match
+    if PS1_VIZIER_TABLE_ID:
+        ps1_path = xdir / 'sex_ps1_xmatch_cdss.csv'
+        try:
+            _run_cdsskymatch(sex_csv, ps1_path, ra_col=sex_ra_col, dec_col=sex_dec_col,
+                              cdstable=PS1_VIZIER_TABLE_ID, radius_arcsec=radius_arcsec)
+            logger.info('[POST][CDS] PS1 xmatch -> %s', ps1_path)
+            _validate_within_5_arcsec(ps1_path)
+            ps1_out = str(ps1_path)
+        except Exception as e:
+            logger.warning('[POST][WARN] CDS PS1 xmatch failed: %s', e)
+
+    return gaia_out, ps1_out, str(sex_csv)
+
+
+def run_psf_two_pass_and_cds_xmatch(
+    fits_path: str | Path,
+    run_dir: str | Path,
+    *,
+    config_root: str | Path = 'configs',
+    sex_bin: Optional[str] = None,
+    sex_ra_col: str = 'ALPHA_J2000',
+    sex_dec_col: str = 'DELTA_J2000',
+    radius_arcsec: float = 5.0,
+) -> tuple[str, str, str, Optional[str], Optional[str], str]:
+    """Convenience wrapper: run two‑pass SExtractor+PSFEx, then CDS X‑Match and validation."""
+    pass1, psf, pass2 = run_psf_two_pass(fits_path, run_dir, config_root=config_root, sex_bin=sex_bin)
+    gaia_out, ps1_out, sex_csv = run_cds_xmatch(run_dir, pass2, radius_arcsec=radius_arcsec,
+                                                sex_ra_col=sex_ra_col, sex_dec_col=sex_dec_col)
+    return pass1, psf, pass2, gaia_out, ps1_out, sex_csv
