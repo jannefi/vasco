@@ -1,7 +1,9 @@
 # VASCO v0.06.91 — PSF-aware 2-pass pipeline (release 23-Nov-2025)
 
 
-Current randomized run test (30-Nov-2025):
+Current randomized run test (05-Dec-2025):
+- Itroduced a working Docker image. You don't need to install anything except Docker. See [this document](/DOCKER_READ.md)
+  - docker image contains psfex, sextractor, stilts and all required python modules.
 - Start using Stilts CDSSkymatch
   - export VASCO_CDS_GAIA_TABLE="I/350/gaiaedr3"
   - export VASCO_CDS_PS1_TABLE="II/389/ps1_dr2"
