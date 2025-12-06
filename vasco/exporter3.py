@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 import logging
 from pathlib import Path
@@ -8,12 +9,10 @@ from astropy.table import Table
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-
 __all__ = ['export_and_summarize']
 _logger = logging.getLogger('vasco')
 ExportMode = Literal['none','csv','parquet','both']
-
-# ---- LDAC reader ----
+        # ---- LDAC reader ----
 def _read_ldac_table(ldac_path: str | Path) -> Table:
     p = Path(ldac_path)
     with fits.open(p, memmap=False) as hdul:
@@ -24,7 +23,6 @@ def _read_ldac_table(ldac_path: str | Path) -> Table:
             if isinstance(hdu, fits.BinTableHDU):
                 return Table(hdu.data)
     raise RuntimeError('No table found in LDAC catalog: ' + str(p))
-
 # ---- Helpers ----
 def _to_dataframe(tab: Table):
     try:
@@ -32,7 +30,6 @@ def _to_dataframe(tab: Table):
         return tab.to_pandas(), None
     except Exception as exc:
         return None, str(exc)
-
 def _one_d_columns(tab: Table):
     names, skipped = [], []
     for name in tab.colnames:
@@ -45,7 +42,6 @@ def _one_d_columns(tab: Table):
         else:
             skipped.append(name)
     return names, skipped
-
 # ---- Writers ----
 def _write_csv_and_ecsv(tab: Table, out_dir: Path) -> tuple[Path, list[str]]:
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -69,7 +65,6 @@ def _write_csv_and_ecsv(tab: Table, out_dir: Path) -> tuple[Path, list[str]]:
     if skipped:
         _logger.info('[INFO] CSV omitted multidimensional columns: %s', ','.join(skipped))
     return csv_path, skipped
-
 def _write_parquet(tab: Table, out_dir: Path) -> Path | None:
     pq_path = out_dir / 'final_catalog.parquet'
     names_1d, _ = _one_d_columns(tab)
@@ -93,22 +88,19 @@ def _write_parquet(tab: Table, out_dir: Path) -> Path | None:
     except Exception as exc:
         _logger.warning('[WARN] Parquet not available (%s); skipping.', exc)
         return None
-
 # ---- QA utilities ----
 def _finite2(x, y):
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
     m = np.isfinite(x) & np.isfinite(y)
     return x[m], y[m]
-
 def _finite1(x):
     x = np.asarray(x, dtype=float)
     m = np.isfinite(x)
     return x[m]
-
 def _scatter(tab: Table, xname: str, yname: str, out: Path, *,
-             xlog: bool=False, ylog: bool=False, xlabel: str | None=None, ylabel: str | None=None,
-             title: str | None=None, s: int=6, alpha: float=0.5, color: str='#4472c4') -> Path | None:
+                xlog: bool=False, ylog: bool=False, xlabel: str | None=None, ylabel: str | None=None,
+                title: str | None=None, s: int=6, alpha: float=0.5, color: str='#4472c4') -> Path | None:
     if xname not in tab.colnames or yname not in tab.colnames:
         return None
     x, y = _finite2(tab[xname], tab[yname])
@@ -124,11 +116,16 @@ def _scatter(tab: Table, xname: str, yname: str, out: Path, *,
         ax.set_xscale('log')
     if ylog:
         ax.set_yscale('log')
+    # Astronomy convention: magnitudes decrease to the right
+    try:
+        if (xlabel and 'MAG' in str(xlabel)) or ('MAG' in xname):
+            ax.invert_xaxis()
+    except Exception:
+        pass
     fig.tight_layout()
     fig.savefig(out, dpi=120)
     plt.close(fig)
     return out
-
 def _hist(tab: Table, name: str, out: Path, bins: int=30, color: str='#4472c4', title: str | None=None) -> Path | None:
     if name not in tab.colnames:
         return None
@@ -147,7 +144,6 @@ def _hist(tab: Table, name: str, out: Path, bins: int=30, color: str='#4472c4', 
     fig.savefig(out, dpi=120)
     plt.close(fig)
     return out
-
 # ---- Main API ----
 def export_and_summarize(
     ldac_path: str | Path,
@@ -159,16 +155,13 @@ def export_and_summarize(
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     tab = _read_ldac_table(ldac_path)
-
     csv_path: Path | None = None
     pq_path: Path | None = None
-
     if export in ('csv','both'):
         csv_path, _ = _write_csv_and_ecsv(tab, run_dir)
         _logger.info('[INFO] Wrote CSV: %s', csv_path)
     if export in ('parquet','both'):
         pq_path = _write_parquet(tab, run_dir)
-
     # Basic stats
     n_sources = len(tab)
     median_val = float('nan')
@@ -177,16 +170,13 @@ def export_and_summarize(
             median_val = float(np.nanmedian(np.asarray(tab[histogram_col], dtype=float)))
         except Exception:
             median_val = float('nan')
-
     # QA plots set
     qa_files: List[str] = []
-
     # 1) Keep original single histogram (FWHM_IMAGE by default)
     hist_path = run_dir / histogram_png
     hp = _hist(tab, histogram_col, hist_path)
     if hp is not None:
         qa_files.append(hp.name)
-
     # 2) Additional histograms (if present)
     for name, fname in [
         ('MAG_AUTO', 'qa_mag_auto_hist.png'),
@@ -196,7 +186,6 @@ def export_and_summarize(
         p = _hist(tab, name, run_dir / fname)
         if p is not None:
             qa_files.append(p.name)
-
     # 3) Scatter plots (if columns exist)
     scat_specs = [
         ('MAG_AUTO','SNR_WIN','qa_mag_vs_snr.png', False, True, 'MAG_AUTO [mag]', 'SNR_WIN', 'SNR vs MAG'),
@@ -207,18 +196,10 @@ def export_and_summarize(
     for xname, yname, fname, xlog, ylog, xlabel, ylabel, title in scat_specs:
         p = _scatter(tab, xname, yname, run_dir / fname, xlog=xlog, ylog=ylog, xlabel=xlabel, ylabel=ylabel, title=title)
         if p is not None:
-            # Conventional magnitudes decrease to the right
-            if 'MAG_AUTO' in xname:
-                try:
-                    import matplotlib.pyplot as _plt
-                    _plt.gca().invert_xaxis()
-                except Exception:
-                    pass
             qa_files.append(p.name)
-
     # Write summary markdown with gallery
     summary_md = run_dir / 'RUN_SUMMARY.md'
-    nl = '\n'
+    nl = ''
     lines = [
         '# Run Summary',
         '',
@@ -232,12 +213,10 @@ def export_and_summarize(
             lines.append(f"- **CSV omitted multidimensional columns**: {', '.join(skipped_md)}")
     except Exception:
         pass
-
     if qa_files:
         lines += ['', '## QA Plots']
         for f in qa_files:
-            lines.append(f'![]({f})')
+            lines.append(f'![ ]({f})')
     summary_md.write_text(nl.join(lines)+nl, encoding='utf-8')
     _logger.info('[INFO] Wrote summary: %s', summary_md)
-
     return csv_path, pq_path

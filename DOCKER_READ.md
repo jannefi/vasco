@@ -27,5 +27,5 @@ Note that the env variables are not persistent. If you exit the container, you n
 
 example: run stilts command on a local file in data folder
 ```bash
-docker run --rm -v "$(pwd)/data":/app/data asto-tools:latest stilts tcopy in=/data/my_catalog.fits out=/data/my_catalog_copy.fits
+docker run --rm -v "$(pwd)/data":/app/data astro-tools:latest stilts tcopy in=/data/my_catalog.fits out=/data/my_catalog_copy.fits
 ```
