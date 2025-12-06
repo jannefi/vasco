@@ -26,6 +26,93 @@ from .utils.coords import parse_ra as _parse_ra, parse_dec as _parse_dec
 # Helpers
 # ----------------------
 
+# --- begin: unit-tolerant within-5" validator for CDS x-match outputs ---
+
+from pathlib import Path
+
+def _ensure_tool_cli(tool: str) -> None:
+    """Local ensure_tool to avoid imports; no-op if stilts is present."""
+    import shutil as _sh
+    if _sh.which(tool) is None:
+        raise RuntimeError(f"Required tool '{tool}' not found in PATH.")
+
+def _validate_within_5_arcsec_unit_tolerant(xmatch_csv: Path) -> Path:
+    """
+    Create <stem>_within5arcsec.csv keeping only rows within 5 arcsec.
+
+    Logic:
+    - If 'angDist' exists: try treating it as ARCSECONDS (angDist<=5).
+      If that yields 0 rows, fallback to DEGREES (3600*angDist<=5).
+    - Else: compute separation via skyDistanceDegrees(ALPHA_J2000,DELTA_J2000,<ext_ra>,<ext_dec>) and select <=5".
+    """
+    _ensure_tool_cli('stilts')
+    import csv, subprocess
+
+    xmatch_csv = Path(xmatch_csv)
+    out = xmatch_csv.with_name(xmatch_csv.stem + '_within5arcsec.csv')
+
+    # Inspect header
+    with open(xmatch_csv, newline='') as f:
+        header = next(csv.reader(f), [])
+    cols = set(header)
+
+    def _write_empty():
+        subprocess.run(
+            ['stilts', 'tpipe', f'in={str(xmatch_csv)}',
+             'cmd=select false', f'out={str(out)}', 'ofmt=csv'],
+            check=True
+        )
+        return out
+
+    # Case A: angDist present
+    if 'angDist' in cols:
+        # Try arcseconds first
+        p = subprocess.run(
+            ['stilts','tpipe', f'in={str(xmatch_csv)}', 'cmd=select angDist<=5', 'omode=count'],
+            capture_output=True, text=True
+        )
+        try:
+            # 'omode=count' prints "columns: X   rows: Y" or just "Y"
+            cnt_text = (p.stdout or '0').strip().split()  # robust parsing
+            c = int(cnt_text[-1]) if cnt_text else 0
+        except Exception:
+            c = 0
+
+        if c > 0:
+            subprocess.run(
+                ['stilts','tpipe', f'in={str(xmatch_csv)}',
+                 'cmd=select angDist<=5', f'out={str(out)}', 'ofmt=csv'],
+                check=True
+            )
+            return out
+
+        # Fallback: treat as degrees
+        subprocess.run(
+            ['stilts','tpipe', f'in={str(xmatch_csv)}',
+             'cmd=select 3600*angDist<=5', f'out={str(out)}', 'ofmt=csv'],
+            check=True
+        )
+        return out
+
+    # Case B: compute from RA/Dec columns if possible
+    # Prefer common external RA/Dec column pairs; adapt if your CDS schema names differ.
+    for a, b in [('ra','dec'), ('RAJ2000','DEJ2000'), ('RA_ICRS','DE_ICRS'), ('RA','DEC')]:
+        if a in cols and b in cols:
+            cmd = ("cmd=addcol angDist_arcsec "
+                   f"3600*skyDistanceDegrees(ALPHA_J2000,DELTA_J2000,{a},{b}); "
+                   "select angDist_arcsec<=5")
+            subprocess.run(
+                ['stilts','tpipe', f'in={str(xmatch_csv)}', cmd, f'out={str(out)}', 'ofmt=csv'],
+                check=True
+            )
+            return out
+
+    # No usable columns → empty
+    return _write_empty()
+
+# --- end: unit-tolerant within-5" validator for CDS x-match outputs ---
+
+
 def _build_run_dir(base: str | Path | None = None) -> Path:
     base = Path(base) if base else Path('data') / 'runs'
     base.mkdir(parents=True, exist_ok=True)
@@ -240,7 +327,7 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0,
                 cdstable=cds_gaia_table, radius_arcsec=radius_arcsec,
                 find='best', ofmt='csv', omode='out')
             print('[POST][CDS]', tile_dir.name, 'Gaia xmatch ->', out_gaia)
-            _validate_within_5_arcsec(out_gaia)
+            _validate_within_5_arcsec_unit_tolerant(out_gaia)
             time.sleep(45.0)  # courtesy delay to avoid immediate CDS overload
         except StiltsNotFound:
             print('[POST][WARN]', tile_dir.name, 'STILTS not found; CDS Gaia xmatch skipped')
@@ -256,7 +343,7 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0,
                         cdstable=cds_ps1_table, radius_arcsec=radius_arcsec,
                         find='best', ofmt='csv', omode='out')
             print('[POST][CDS]', tile_dir.name, 'PS1 xmatch ->', out_ps1)
-            _validate_within_5_arcsec(out_ps1)
+            _validate_within_5_arcsec_unit_tolerant(out_ps1)
         except StiltsNotFound:
             print('[POST][WARN]', tile_dir.name, 'STILTS not found; CDS PS1 xmatch skipped')
         except Exception as e:
@@ -767,3 +854,9 @@ def main(argv: List[str] | None = None) -> int:
 
 if __name__ == '__main__':
     raise SystemExit(main())
+
+
+def _validate_within_5_arcsec(xmatch_csv):
+    from pathlib import Path as _P
+    return _validate_within_5_arcsec_unit_tolerant(_P(xmatch_csv))
+
