@@ -116,8 +116,8 @@ def main():
             except Exception as e:
                 log.error(f"Exception running VASCO for tile RA={ra}, Dec={dec}: {e}")
 
-            log.info("Sleeping 30 seconds before next tile...")
-            time.sleep(30)
+            log.info("Sleeping 15 seconds before next tile...")
+            time.sleep(15)
 
     except KeyboardInterrupt:
         log.info("Interrupted by user. Saving progress and exiting.")
