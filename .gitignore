@@ -35,28 +35,9 @@ plate_tiles.done
 plate_tiles.work.tsv
 
 # --- VASCO runtime outputs (tile/run artifacts) ---
-/data/runs/
-/data/tiles/
-/data/tmp/
-/data/cache/
+data/
 
-# Ignore typical per-tile subfolders everywhere under data/
-data/**/raw/
-data/**/run/
-data/**/xmatch/
-data/**/catalogs/
-data/**/qa/
-data/**/logs/
 
-# Ignore common runtime file types ONLY under data/
-data/**/*.fits
-data/**/*.ldac
-data/**/*.ecsv
-data/**/*.csv
-data/**/*.parquet
-data/**/*.png
-data/**/*.html
-data/**/*.log
 
 # Plate-tiling state/artifacts
 plate_tiles*
