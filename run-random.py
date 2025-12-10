@@ -12,8 +12,8 @@ from subprocess import Popen, PIPE
 # --- CONFIGURABLE PARAMETERS ---
 RA_MIN, RA_MAX = 0, 360
 DEC_MIN, DEC_MAX = 0, 90
-TILE_SIZE_ARCMIN = 60
-TILE_RADIUS_ARCMIN = 30  # For hex tessellation
+TILE_SIZE_ARCMIN = 30
+TILE_RADIUS_ARCMIN = 15  # For hex tessellation
 WORKDIR = "data/runs"
 PROCESSED_FILE = "data/processed_tiles.json"
 LOG_FILE = "data/vasco_random_run.log"
