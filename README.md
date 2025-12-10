@@ -85,3 +85,8 @@ Set a small courtesy delay between CDS calls (Gaia and PS1) if desired:
 ```bash
 export VASCO_CDS_PAUSE_SECONDS=8   # default if unset is 8s; set 0 to disable
 ```
+
+
+**Tile-first layout**
+All outputs now write under `data/tiles/<stem>/...` where `<stem>` encodes survey, RA, Dec and size.
+This removes the need for `run-YYYYMMDD_HHMMSS` directories and makes re-processing of a single tile idempotent.
