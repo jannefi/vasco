@@ -1,7 +1,7 @@
 # VASCO v0.06.91 — PS1+Gaia x‑match hardening + USNO B.10, bright star mask
 
 **Highlights**
-- Possibility to get USNO-B data via VizieR I/284 
+- Possibility to get USNO-B data via VizieR I/284
 
 **Highlights**
 - Sub‑second PS1 mean-table fetches using explicit columns + small degree radii.

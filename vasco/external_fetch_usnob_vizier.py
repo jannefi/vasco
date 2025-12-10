@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional
@@ -13,9 +12,15 @@ USNOB_CAT = "I/284"  # VizieR catalog code for USNO-B1.0
 # Default column set (keep payload modest, but useful for cross-match/QA)
 _USNOB_COLUMNS = [
     "USNO-B1.0",  # id
-    "RAJ2000", "DEJ2000",  # degrees J2000
-    "B1mag", "R1mag", "B2mag", "R2mag", "Imag",
-    "pmRA", "pmDE"
+    "RAJ2000",
+    "DEJ2000",  # degrees J2000
+    "B1mag",
+    "R1mag",
+    "B2mag",
+    "R2mag",
+    "Imag",
+    "pmRA",
+    "pmDE",
 ]
 
 

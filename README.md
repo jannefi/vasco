@@ -11,7 +11,7 @@ Current randomized run test (05-Dec-2025):
 - python ./scripts/filter_unmatched_all.py (final matching steps)
 - python ./scripts/summarize_runs.py --data-dir ./data - produces markdown and csv report of all runs
 
-Added possibility to use Vizier for downloading USNO-B data. 
+Added possibility to use Vizier for downloading USNO-B data.
 
 Changed the downloader logic so that only POSSI-E/POSS-I images are allowed. Other images are dismissed. Example coordinates updated. Fallback to SkyView was removed.
 
@@ -22,7 +22,7 @@ This package lets you run the VASCO two-pass **SExtractor → PSFEx → SExtract
 - **Two-pass PSF-aware** photometry with SExtractor/PSFEx.
 - Orchestrator writes `RUN_COUNTS.json`, `RUN_INDEX.json`, **`RUN_OVERVIEW.md`**, and **`RUN_MISSING.json`** (planned/downloaded/processed + missing list).
 
-> **Requires**: `sextractor` (or `sex`), `stilts` and `psfex` on PATH. 
+> **Requires**: `sextractor` (or `sex`), `stilts` and `psfex` on PATH.
 On macOS: `brew install sextractor psfex`. Python deps: `astropy`, `requests`, `numpy`, `matplotlib` (and optionally `pandas`, `pyarrow`).
 
 ## Install

@@ -2,6 +2,11 @@
 # This provides a more recent Python version (> 3.10) without complex PPA configurations.
 FROM debian:bookworm-slim
 
+
+ARG GIT_COMMIT=unknown
+LABEL org.opencontainers.image.revision=$GIT_COMMIT
+ENV VASCO_BUILD_COMMIT=$GIT_COMMIT
+
 # Set environment variables for the STILTS application
 ENV STILTS_VERSION=3.5-3
 ENV STILTS_HOME=/opt/stilts
@@ -57,11 +62,11 @@ COPY *.yaml /app/
 
 # note: symlinks last
 RUN ln -s /usr/bin/python3 /usr/bin/python \
- && ln -s /usr/bin/source-extractor /usr/bin/sex 
+ && ln -s /usr/bin/source-extractor /usr/bin/sex
 
 # --- 6. Final Configuration ---
 
-# Define the default working directory for the user. 
+# Define the default working directory for the user.
 # UPDATED: Reverting WORKDIR to /app/data so scripts in /app can use relative paths like ./data/...
 WORKDIR /app
 

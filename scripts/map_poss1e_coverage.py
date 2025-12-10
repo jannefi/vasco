@@ -1,8 +1,7 @@
-
 #!/usr/bin/env python3
 """
 Map out STScI DSS POSS-I E (DSS1 Red) coverage over an RA/Dec grid.
-example use: 
+example use:
 python map_poss1e_coverage.py \
    --center-ra 150.000 --center-dec 20.000 \
    --width-arcmin 240 --height-arcmin 240 \
@@ -26,25 +25,34 @@ from urllib3.util.retry import Retry
 from astropy.io import fits
 from io import BytesIO
 
-DEF_UA = 'VASCO/0.06.9 (+coverage map; STScI-only)'
-STSCI_URL = 'https://archive.stsci.edu/cgi-bin/dss_search'
+DEF_UA = "VASCO/0.06.9 (+coverage map; STScI-only)"
+STSCI_URL = "https://archive.stsci.edu/cgi-bin/dss_search"
 
 
-def build_params(ra_deg: float, dec_deg: float, size_arcmin: float, v: str = '1') -> Tuple[str, dict, dict]:
+def build_params(
+    ra_deg: float, dec_deg: float, size_arcmin: float, v: str = "1"
+) -> Tuple[str, dict, dict]:
     params = {
-        'v': v, 'r': f'{ra_deg:.6f}', 'd': f'{dec_deg:.6f}', 'e': 'J2000',
-        'h': f'{size_arcmin:.2f}', 'w': f'{size_arcmin:.2f}',
-        'f': 'fits', 'c': 'none', 'fov': 'NONE', 'v3': ''
+        "v": v,
+        "r": f"{ra_deg:.6f}",
+        "d": f"{dec_deg:.6f}",
+        "e": "J2000",
+        "h": f"{size_arcmin:.2f}",
+        "w": f"{size_arcmin:.2f}",
+        "f": "fits",
+        "c": "none",
+        "fov": "NONE",
+        "v3": "",
     }
-    headers = {'User-Agent': DEF_UA}
+    headers = {"User-Agent": DEF_UA}
     return STSCI_URL, params, headers
 
 
 def http_get(url: str, params: dict, headers: dict, timeout: float = 60.0) -> bytes:
     s = requests.Session()
     rtry = Retry(total=4, backoff_factor=0.6, status_forcelist=[502, 503, 504, 429])
-    s.mount('https://', HTTPAdapter(max_retries=rtry))
-    s.mount('http://', HTTPAdapter(max_retries=rtry))
+    s.mount("https://", HTTPAdapter(max_retries=rtry))
+    s.mount("http://", HTTPAdapter(max_retries=rtry))
     r = s.get(url, params=params, headers=headers, timeout=timeout)
     r.raise_for_status()
     return r.content
@@ -54,6 +62,7 @@ def normalize_fits(buf: bytes) -> bytes:
     # Accept gzipped FITS or plain FITS. Minimal check.
     if len(buf) >= 2 and buf[0] == 0x1F and buf[1] == 0x8B:
         import gzip
+
         try:
             data = gzip.decompress(buf)
             return data
@@ -63,48 +72,65 @@ def normalize_fits(buf: bytes) -> bytes:
 
 
 def status_from_header(hdr) -> str:
-    survey = str(hdr.get('SURVEY', '')).upper()
+    survey = str(hdr.get("SURVEY", "")).upper()
     # POSS-like
-    if ('POSS' in survey) or ('POSS-I' in survey) or ('POSS E' in survey) or ('POSS-E' in survey):
-        return 'POSS'
-    if survey == 'SUPPLEMENTAL':
-        return 'SUPPLEMENTAL'
-    if ('SERC' in survey) or ('AAO' in survey) or ('SES' in survey) or ('ER' in survey) or ('EJ' in survey):
-        return 'SERC_AAO'
-    return 'UNKNOWN'
+    if (
+        ("POSS" in survey)
+        or ("POSS-I" in survey)
+        or ("POSS E" in survey)
+        or ("POSS-E" in survey)
+    ):
+        return "POSS"
+    if survey == "SUPPLEMENTAL":
+        return "SUPPLEMENTAL"
+    if (
+        ("SERC" in survey)
+        or ("AAO" in survey)
+        or ("SES" in survey)
+        or ("ER" in survey)
+        or ("EJ" in survey)
+    ):
+        return "SERC_AAO"
+    return "UNKNOWN"
 
 
-def probe_point(ra_deg: float, dec_deg: float, size_arcmin: float, v: str = '1') -> Tuple[str, str, str, str]:
+def probe_point(
+    ra_deg: float, dec_deg: float, size_arcmin: float, v: str = "1"
+) -> Tuple[str, str, str, str]:
     url, params, headers = build_params(ra_deg, dec_deg, size_arcmin, v=v)
     try:
         buf = http_get(url, params, headers)
         data = normalize_fits(buf)
         # FITS signature check (tolerant)
         sig = data[:80]
-        if (b'SIMPLE' not in sig) and (b'XTENSION' not in sig):
-            return ('', '', '', 'ERROR_NONFITS')
+        if (b"SIMPLE" not in sig) and (b"XTENSION" not in sig):
+            return ("", "", "", "ERROR_NONFITS")
         with fits.open(BytesIO(data), memmap=False) as hdul:
             hdr = hdul[0].header
-            survey = str(hdr.get('SURVEY', '')).upper()
-            origin = str(hdr.get('ORIGIN', '')).upper()
-            plateid = str(hdr.get('PLATEID', '')).upper()
+            survey = str(hdr.get("SURVEY", "")).upper()
+            origin = str(hdr.get("ORIGIN", "")).upper()
+            plateid = str(hdr.get("PLATEID", "")).upper()
             status = status_from_header(hdr)
             return (survey, origin, plateid, status)
     except Exception as e:
-        return ('', '', '', f'ERROR_{type(e).__name__}')
+        return ("", "", "", f"ERROR_{type(e).__name__}")
 
 
 def main():
-    ap = argparse.ArgumentParser(description='Map STScI DSS POSS-I E coverage over an RA/Dec grid (DSS1 via v=1).')
-    ap.add_argument('--center-ra', type=float, required=True)
-    ap.add_argument('--center-dec', type=float, required=True)
-    ap.add_argument('--width-arcmin', type=float, required=True)
-    ap.add_argument('--height-arcmin', type=float, required=True)
-    ap.add_argument('--step-arcmin', type=float, default=60.0)
-    ap.add_argument('--size-arcmin', type=float, default=20.0)
-    ap.add_argument('--v', type=str, default='1', choices=['1','2'])
-    ap.add_argument('--out', type=str, default='coverage')
-    ap.add_argument('--sleep-ms', type=int, default=200, help='Sleep ms between requests')
+    ap = argparse.ArgumentParser(
+        description="Map STScI DSS POSS-I E coverage over an RA/Dec grid (DSS1 via v=1)."
+    )
+    ap.add_argument("--center-ra", type=float, required=True)
+    ap.add_argument("--center-dec", type=float, required=True)
+    ap.add_argument("--width-arcmin", type=float, required=True)
+    ap.add_argument("--height-arcmin", type=float, required=True)
+    ap.add_argument("--step-arcmin", type=float, default=60.0)
+    ap.add_argument("--size-arcmin", type=float, default=20.0)
+    ap.add_argument("--v", type=str, default="1", choices=["1", "2"])
+    ap.add_argument("--out", type=str, default="coverage")
+    ap.add_argument(
+        "--sleep-ms", type=int, default=200, help="Sleep ms between requests"
+    )
     args = ap.parse_args()
 
     center_ra = args.center_ra
@@ -122,23 +148,49 @@ def main():
     ras = [center_ra - half_w_deg + i * step_deg for i in range(nx + 1)]
     decs = [center_dec - half_h_deg + j * step_deg for j in range(ny + 1)]
 
-    out_csv = Path(f'{args.out}.csv')
-    out_txt = Path(f'{args.out}.txt')
+    out_csv = Path(f"{args.out}.csv")
+    out_txt = Path(f"{args.out}.txt")
 
-    print(f'[INFO] Grid: {len(ras)} x {len(decs)} points (step={step} arcmin), DSS v={args.v}, size={args.size_arcmin} arcmin')
-    print(f"[INFO] Center: RA={center_ra:.3f} Dec={center_dec:.3f}; width={w:.1f}' height={h:.1f}'")
+    print(
+        f"[INFO] Grid: {len(ras)} x {len(decs)} points (step={step} arcmin), DSS v={args.v}, size={args.size_arcmin} arcmin"
+    )
+    print(
+        f"[INFO] Center: RA={center_ra:.3f} Dec={center_dec:.3f}; width={w:.1f}' height={h:.1f}'"
+    )
 
     rows = []
     for j, dec in enumerate(decs):
         for i, ra in enumerate(ras):
-            survey, origin, plateid, status = probe_point(ra, dec, args.size_arcmin, v=args.v)
-            rows.append({'ra_deg': ra, 'dec_deg': dec, 'v': args.v,
-                         'survey': survey, 'origin': origin, 'plateid': plateid, 'status': status})
-            print(f'[POINT] RA={ra:.5f} Dec={dec:.5f} -> {status} (SURVEY={survey})')
+            survey, origin, plateid, status = probe_point(
+                ra, dec, args.size_arcmin, v=args.v
+            )
+            rows.append(
+                {
+                    "ra_deg": ra,
+                    "dec_deg": dec,
+                    "v": args.v,
+                    "survey": survey,
+                    "origin": origin,
+                    "plateid": plateid,
+                    "status": status,
+                }
+            )
+            print(f"[POINT] RA={ra:.5f} Dec={dec:.5f} -> {status} (SURVEY={survey})")
             time.sleep(args.sleep_ms / 1000.0)
 
-    with out_csv.open('w', newline='') as f:
-        wcsv = csv.DictWriter(f, fieldnames=['ra_deg','dec_deg','v','survey','origin','plateid','status'])
+    with out_csv.open("w", newline="") as f:
+        wcsv = csv.DictWriter(
+            f,
+            fieldnames=[
+                "ra_deg",
+                "dec_deg",
+                "v",
+                "survey",
+                "origin",
+                "plateid",
+                "status",
+            ],
+        )
         wcsv.writeheader()
         for r in rows:
             wcsv.writerow(r)
@@ -148,30 +200,33 @@ def main():
     for j in range(len(decs)):
         line = []
         for i in range(len(ras)):
-            st = rows[idx]['status']
-            if st == 'POSS':
-                ch = 'P'
-            elif st == 'SERC_AAO':
-                ch = 'S'
-            elif st == 'SUPPLEMENTAL':
-                ch = 'U'
-            elif st.startswith('ERROR_'):
-                ch = 'X'
+            st = rows[idx]["status"]
+            if st == "POSS":
+                ch = "P"
+            elif st == "SERC_AAO":
+                ch = "S"
+            elif st == "SUPPLEMENTAL":
+                ch = "U"
+            elif st.startswith("ERROR_"):
+                ch = "X"
             else:
-                ch = '.'
+                ch = "."
             line.append(ch)
             idx += 1
-        grid_chars.append(''.join(line))
+        grid_chars.append("".join(line))
 
-    with out_txt.open('w') as f:
-        f.write('# Coverage ASCII map (north at top):')
-        f.write('# Legend: P=POSS, S=SERC/AAO, U=SUPPLEMENTAL, X=ERROR, .=UNKNOWN')
-        f.write(f"# Center RA={center_ra:.3f} Dec={center_dec:.3f} | width={w:.1f}' height={h:.1f}' step={step:.1f}'")
+    with out_txt.open("w") as f:
+        f.write("# Coverage ASCII map (north at top):")
+        f.write("# Legend: P=POSS, S=SERC/AAO, U=SUPPLEMENTAL, X=ERROR, .=UNKNOWN")
+        f.write(
+            f"# Center RA={center_ra:.3f} Dec={center_dec:.3f} | width={w:.1f}' height={h:.1f}' step={step:.1f}'"
+        )
         for line in grid_chars:
-            f.write(line + '')
+            f.write(line + "")
 
-    print(f'[INFO] Wrote CSV: {out_csv}')
-    print(f'[INFO] Wrote ASCII map: {out_txt}')
+    print(f"[INFO] Wrote CSV: {out_csv}")
+    print(f"[INFO] Wrote ASCII map: {out_txt}")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     sys.exit(main())

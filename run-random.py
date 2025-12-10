@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 import os
 import sys
@@ -26,14 +25,16 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(LOG_FILE, mode='a')
-    ]
+        logging.FileHandler(LOG_FILE, mode="a"),
+    ],
 )
 log = logging.getLogger("vasco_random_run")
+
 
 # --- TILE GRID GENERATION ---
 def generate_tile_grid():
     from vasco.downloader import tessellate_centers
+
     width = (RA_MAX - RA_MIN) * 60
     height = (DEC_MAX - DEC_MIN) * 60
     centers = tessellate_centers(
@@ -42,11 +43,12 @@ def generate_tile_grid():
         width_arcmin=width,
         height_arcmin=height,
         tile_radius_arcmin=TILE_RADIUS_ARCMIN,
-        overlap_arcmin=0
+        overlap_arcmin=0,
     )
     # Normalize RA to [0, 360)
     centers = [((ra % 360), dec) for (ra, dec) in centers]
     return centers
+
 
 # --- LOAD/STORE PROCESSED TILES ---
 def load_processed_tiles():
@@ -55,9 +57,11 @@ def load_processed_tiles():
             return set(tuple(x) for x in json.load(f))
     return set()
 
+
 def save_processed_tiles(processed):
     with open(PROCESSED_FILE, "w") as f:
         json.dump([list(x) for x in processed], f)
+
 
 # --- STREAMING SUBPROCESS ---
 def run_and_stream(cmd):
@@ -74,12 +78,15 @@ def run_and_stream(cmd):
     proc.wait()
     return proc.returncode
 
+
 # --- MAIN LOOP ---
 def main():
     log.info("Starting VASCO random tile science run.")
     all_tiles = generate_tile_grid()
     processed = load_processed_tiles()
-    log.info(f"Total tiles in grid: {len(all_tiles)}. Already processed: {len(processed)}.")
+    log.info(
+        f"Total tiles in grid: {len(all_tiles)}. Already processed: {len(processed)}."
+    )
 
     try:
         while True:
@@ -93,26 +100,43 @@ def main():
             log.info(f"Selected tile: RA={ra:.5f}, Dec={dec:.5f}")
 
             cmd = [
-                "python", "-m", "vasco.cli_pipeline", "one2pass",
-                "--ra", str(ra),
-                "--dec", str(dec),
-                "--size-arcmin", str(TILE_SIZE_ARCMIN),
-                "--survey", SURVEY,
-                "--pixel-scale-arcsec", str(PIXEL_SCALE),
-                "--export", "csv",
-                "--hist-col", "FWHM_IMAGE",
-                "--xmatch-backend", "cds",
-                "--xmatch-radius-arcsec", "5.0",
-                "--workdir", str(tile_dir)
+                "python",
+                "-m",
+                "vasco.cli_pipeline",
+                "one2pass",
+                "--ra",
+                str(ra),
+                "--dec",
+                str(dec),
+                "--size-arcmin",
+                str(TILE_SIZE_ARCMIN),
+                "--survey",
+                SURVEY,
+                "--pixel-scale-arcsec",
+                str(PIXEL_SCALE),
+                "--export",
+                "csv",
+                "--hist-col",
+                "FWHM_IMAGE",
+                "--xmatch-backend",
+                "cds",
+                "--xmatch-radius-arcsec",
+                "5.0",
+                "--workdir",
+                str(tile_dir),
             ]
             try:
                 rc = run_and_stream(cmd)
                 if rc == 0:
                     processed.add(tuple(tile))
                     save_processed_tiles(processed)
-                    log.info(f"Tile processed and recorded. Total done: {len(processed)}")
+                    log.info(
+                        f"Tile processed and recorded. Total done: {len(processed)}"
+                    )
                 else:
-                    log.error(f"VASCO pipeline failed for tile RA={ra}, Dec={dec}. Skipping.")
+                    log.error(
+                        f"VASCO pipeline failed for tile RA={ra}, Dec={dec}. Skipping."
+                    )
             except Exception as e:
                 log.error(f"Exception running VASCO for tile RA={ra}, Dec={dec}: {e}")
 
@@ -122,6 +146,7 @@ def main():
     except KeyboardInterrupt:
         log.info("Interrupted by user. Saving progress and exiting.")
         save_processed_tiles(processed)
+
 
 if __name__ == "__main__":
     main()

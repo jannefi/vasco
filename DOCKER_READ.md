@@ -9,7 +9,7 @@ docker build -t astro-tools:latest .
 
 ## interactive mode
 
-This mode allows you to open a shell inside the container and run the tools manually. Local ./data folder is mounted. 
+This mode allows you to open a shell inside the container and run the tools manually. Local ./data folder is mounted.
 ```bash
 docker run -it --rm -v "$(pwd)/data":/app/data astro-tools:latest
 ```

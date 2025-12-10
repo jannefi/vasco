@@ -28,16 +28,40 @@ MANIFEST
 
 # misc
 *.zip
-data/runs/
-data/*.json
-data/run_*
-plate_tiles*
-plate_tiles.done.d/
 README_*
 SESSION_RESUME.md
 .DS_Store
 plate_tiles.done
 plate_tiles.work.tsv
+
+# --- VASCO runtime outputs (tile/run artifacts) ---
+/data/runs/
+/data/tiles/
+/data/tmp/
+/data/cache/
+
+# Ignore typical per-tile subfolders everywhere under data/
+data/**/raw/
+data/**/run/
+data/**/xmatch/
+data/**/catalogs/
+data/**/qa/
+data/**/logs/
+
+# Ignore common runtime file types ONLY under data/
+data/**/*.fits
+data/**/*.ldac
+data/**/*.ecsv
+data/**/*.csv
+data/**/*.parquet
+data/**/*.png
+data/**/*.html
+data/**/*.log
+
+# Plate-tiling state/artifacts
+plate_tiles*
+plate_tiles.done.d/
+
 
 # Python cache & build
 __pycache__/
@@ -218,9 +242,9 @@ cython_debug/
 .abstra/
 
 # Visual Studio Code
-#  Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore 
+#  Visual Studio Code specific template is maintained in a separate VisualStudioCode.gitignore
 #  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
-#  and can be added to the global gitignore or merged into this file. However, if you prefer, 
+#  and can be added to the global gitignore or merged into this file. However, if you prefer,
 #  you could uncomment the following to ignore the entire vscode folder
 # .vscode/
 
@@ -241,3 +265,17 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Local helper scripts/patches
+*.patch
+apply_vasco_*.sh
+scripts/*_helper.py
+
+
+# Local helper scripts/patches
+*.patch
+apply_vasco_*.sh
+scripts/*_helper.py
+scripts/fix_future_and_helper_order.py
+scripts/verify_versions.sh
+vasco/cli_pipeline.py.broken.backup

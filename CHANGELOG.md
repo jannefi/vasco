@@ -16,7 +16,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - **configs and python code** components: bright_star_mask, stilts_wrapper, testdata
 - **PS1 DR2 mean-table** fetch now requests **explicit columns** (includes `raMean,decMean` + compact mags) for fast, predictable responses.
-- **Auto-detect RA/Dec** in external CSVs (Gaia & PS1) now covers: 
+- **Auto-detect RA/Dec** in external CSVs (Gaia & PS1) now covers:
   `('ra','dec')`, `('RA_ICRS','DE_ICRS')`, `('RAJ2000','DEJ2000')`, `('RA','DEC')`, `('lon','lat')`,
   and **PS1 mean** `('raMean','decMean')` (TAP alias `('RAMean','DecMean')`).
 - CLI checker `_csv_has_radec()` recognizes **`raMean/decMean`** and **`RAMean/DecMean`** (PS1 x‑match no longer skipped).
@@ -32,5 +32,3 @@ All notable changes to this project will be documented in this file.
 - `vasco/external_fetch_online.py`
 - `vasco/mnras/xmatch_stilts.py`
 - `vasco/cli_pipeline.py`
-
-

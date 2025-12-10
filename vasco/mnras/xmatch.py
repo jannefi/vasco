@@ -21,19 +21,25 @@ def ps1_match(ra_deg: float, dec_deg: float, r_arcsec: float = 5.0) -> bool:
     if Catalogs is None:
         return False
     try:
-        tab = Catalogs.query_region(f"{ra_deg} {dec_deg}", radius=r_arcsec * u.arcsec,
-                                    catalog="Panstarrs", data_release="dr2")
-        return (len(tab) > 0)
+        tab = Catalogs.query_region(
+            f"{ra_deg} {dec_deg}",
+            radius=r_arcsec * u.arcsec,
+            catalog="Panstarrs",
+            data_release="dr2",
+        )
+        return len(tab) > 0
     except Exception:
         return False
 
 
-def gaia_match(ra_deg: float, dec_deg: float, r_arcsec: float = 5.0) -> Tuple[bool, Dict[str, Any]]:
+def gaia_match(
+    ra_deg: float, dec_deg: float, r_arcsec: float = 5.0
+) -> Tuple[bool, Dict[str, Any]]:
     """Return (matched, best_row) using a Gaia EDR3 cone; best_row may be empty dict if no match."""
     if Gaia is None:
         return False, {}
     try:
-        coord = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg, frame='icrs')
+        coord = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg, frame="icrs")
         j = Gaia.cone_search_async(coord, radius=r_arcsec * u.arcsec)
         res = j.get_results()
         if len(res) == 0:
@@ -41,8 +47,8 @@ def gaia_match(ra_deg: float, dec_deg: float, r_arcsec: float = 5.0) -> Tuple[bo
         # pick nearest
         res = res.to_pandas()
         # Gaia returns distance columns only in some endpoints; fallback to angular calc if missing
-        res['sep'] = ((res['ra'] - ra_deg).abs() + (res['dec'] - dec_deg).abs())
-        row = res.sort_values('sep').iloc[0].to_dict()
+        res["sep"] = (res["ra"] - ra_deg).abs() + (res["dec"] - dec_deg).abs()
+        row = res.sort_values("sep").iloc[0].to_dict()
         return True, row
     except Exception:
         return False, {}
