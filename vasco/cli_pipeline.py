@@ -1,3 +1,17 @@
+
+import os as _os
+import time as _time
+
+def _cds_courtesy_pause():
+    try:
+        pause_sec = float(_os.getenv('VASCO_CDS_PAUSE_SECONDS', '8'))
+    except Exception:
+        pause_sec = 8.0
+    if pause_sec > 0:
+        try:
+            _time.sleep(pause_sec)
+        except Exception:
+            pass
 from __future__ import annotations
 import argparse, json, time, subprocess, os
 from pathlib import Path
@@ -328,7 +342,7 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0,
                 find='best', ofmt='csv', omode='out')
             print('[POST][CDS]', tile_dir.name, 'Gaia xmatch ->', out_gaia)
             _validate_within_5_arcsec_unit_tolerant(out_gaia)
-            time.sleep(45.0)  # courtesy delay to avoid immediate CDS overload
+            _cds_courtesy_pause()  # courtesy delay to avoid immediate CDS overload
         except StiltsNotFound:
             print('[POST][WARN]', tile_dir.name, 'STILTS not found; CDS Gaia xmatch skipped')
         except Exception as e:
@@ -350,7 +364,8 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0,
             import os, time
             pause_sec = float(os.getenv('VASCO_CDS_PAUSE_SECONDS', '8'))
             if pause_sec > 0:
-                time.sleep(pause_sec)
+                _cds_courtesy_pause(); # replaced
+ # time.sleep(pause_sec)
         except Exception:
             pass
         except StiltsNotFound:
