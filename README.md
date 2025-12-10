@@ -37,9 +37,9 @@ python -m py_compile vasco/*.py vasco/utils/*.py vasco/mnras/*.py
 python -m vasco.cli_pipeline tess2pass \
   --center-ra 150.000 --center-dec 20.000 \
   --width-arcmin 120 --height-arcmin 120 \
-  --tile-radius-arcmin 30 \
+  --tile-radius-arcmin 15 \
   --overlap-arcmin 0 \
-  --size-arcmin 60 \
+  --size-arcmin 30 \
   --survey poss1-e \
   --pixel-scale-arcsec 1.7 \
   --export csv \
@@ -65,7 +65,7 @@ You can pass RA/Dec in **sexagesimal** or **decimal** without manual conversion:
 ```bash
 python -m vasco.cli_pipeline one2pass \
   --ra 150.000 --dec 20.000 \
-  --size-arcmin 60 \
+  --size-arcmin 30 \
   --survey poss1-e \
   --pixel-scale-arcsec 1.7 \
   --workdir data/runs
@@ -78,3 +78,10 @@ Outputs appear under `data/runs/run-YYYYMMDD_HHMMSS/`.
 - Downloader endpoints & parameters per the official docs: [SkyView](https://skyview.gsfc.nasa.gov/current/docs/batchpage.html), [Query form](https://skyview.gsfc.nasa.gov/current/cgi/query.pl), and [STScI DSS CGI](https://stdatu.stsci.edu/dss/script_usage.html). STScI is preferred.
 - CSV omits multi-dimensional columns; full fidelity is in **ECSV**.
 - Configs in `configs/` are **minimal** and intended as a starting point.
+
+
+**CDS x-match courtesy pause (optional)**
+Set a small courtesy delay between CDS calls (Gaia and PS1) if desired:
+```bash
+export VASCO_CDS_PAUSE_SECONDS=8   # default if unset is 8s; set 0 to disable
+```
