@@ -1,17 +1,3 @@
-
-import os as _os
-import time as _time
-
-def _cds_courtesy_pause():
-    try:
-        pause_sec = float(_os.getenv('VASCO_CDS_PAUSE_SECONDS', '8'))
-    except Exception:
-        pause_sec = 8.0
-    if pause_sec > 0:
-        try:
-            _time.sleep(pause_sec)
-        except Exception:
-            pass
 from __future__ import annotations
 import argparse, json, time, subprocess, os
 from pathlib import Path
@@ -342,7 +328,7 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0,
                 find='best', ofmt='csv', omode='out')
             print('[POST][CDS]', tile_dir.name, 'Gaia xmatch ->', out_gaia)
             _validate_within_5_arcsec_unit_tolerant(out_gaia)
-            _cds_courtesy_pause()  # courtesy delay to avoid immediate CDS overload
+            time.sleep(45.0)  # courtesy delay to avoid immediate CDS overload
         except StiltsNotFound:
             print('[POST][WARN]', tile_dir.name, 'STILTS not found; CDS Gaia xmatch skipped')
         except Exception as e:
@@ -358,16 +344,6 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0,
                         find='best', ofmt='csv', omode='out')
             print('[POST][CDS]', tile_dir.name, 'PS1 xmatch ->', out_ps1)
             _validate_within_5_arcsec_unit_tolerant(out_ps1)
-        except Exception:
-            pass
-        try:
-            import os, time
-            pause_sec = float(os.getenv('VASCO_CDS_PAUSE_SECONDS', '8'))
-            if pause_sec > 0:
-                _cds_courtesy_pause(); # replaced
- # time.sleep(pause_sec)
-        except Exception:
-            pass
         except StiltsNotFound:
             print('[POST][WARN]', tile_dir.name, 'STILTS not found; CDS PS1 xmatch skipped')
         except Exception as e:
@@ -827,7 +803,7 @@ def main(argv: List[str] | None = None) -> int:
     one.add_argument('--hist-col', default='FWHM_IMAGE')
     one.add_argument('--workdir', default=None)
     # New: xmatch backend & options
-    one.add_argument('--xmatch-backend', choices=['local','cds'], default='cds', help='Choose local (tskymatch2) or CDS (cdsskymatch) backend')
+    one.add_argument('--xmatch-backend', choices=['local','cds'], default='local', help='Choose local (tskymatch2) or CDS (cdsskymatch) backend')
     one.add_argument('--xmatch-radius-arcsec', type=float, default=5.0, help='Cross-match radius in arcsec (default: 5.0)')
     one.add_argument('--cds-gaia-table', default=os.getenv('VASCO_CDS_GAIA_TABLE'), help='VizieR table ID for Gaia (CDS backend). Env VASCO_CDS_GAIA_TABLE respected.')
     one.add_argument('--cds-ps1-table', default=os.getenv('VASCO_CDS_PS1_TABLE'), help='VizieR table ID for PS1 (CDS backend). Env VASCO_CDS_PS1_TABLE respected.')
@@ -847,7 +823,7 @@ def main(argv: List[str] | None = None) -> int:
     tess.add_argument('--hist-col', default='FWHM_IMAGE')
     tess.add_argument('--workdir', default=None)
     # New: xmatch backend & options
-    tess.add_argument('--xmatch-backend', choices=['local','cds'], default='cds')
+    tess.add_argument('--xmatch-backend', choices=['local','cds'], default='local')
     tess.add_argument('--xmatch-radius-arcsec', type=float, default=5.0)
     tess.add_argument('--cds-gaia-table', default=os.getenv('VASCO_CDS_GAIA_TABLE'))
     tess.add_argument('--cds-ps1-table', default=os.getenv('VASCO_CDS_PS1_TABLE'))
