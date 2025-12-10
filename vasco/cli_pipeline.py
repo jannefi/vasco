@@ -344,14 +344,6 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0,
                         find='best', ofmt='csv', omode='out')
             print('[POST][CDS]', tile_dir.name, 'PS1 xmatch ->', out_ps1)
             _validate_within_5_arcsec_unit_tolerant(out_ps1)
-        # Optional pause after PS1 as well
-        try:
-            import os, time
-            pause_sec = float(os.getenv('VASCO_CDS_PAUSE_SECONDS', '8'))
-            if pause_sec > 0:
-                time.sleep(pause_sec)
-        except Exception:
-            pass
         except StiltsNotFound:
             print('[POST][WARN]', tile_dir.name, 'STILTS not found; CDS PS1 xmatch skipped')
         except Exception as e:
@@ -811,7 +803,7 @@ def main(argv: List[str] | None = None) -> int:
     one.add_argument('--hist-col', default='FWHM_IMAGE')
     one.add_argument('--workdir', default=None)
     # New: xmatch backend & options
-    one.add_argument('--xmatch-backend', choices=['local','cds'], default='cds', help='Choose local (tskymatch2) or CDS (cdsskymatch) backend')
+    one.add_argument('--xmatch-backend', choices=['local','cds'], default='local', help='Choose local (tskymatch2) or CDS (cdsskymatch) backend')
     one.add_argument('--xmatch-radius-arcsec', type=float, default=5.0, help='Cross-match radius in arcsec (default: 5.0)')
     one.add_argument('--cds-gaia-table', default=os.getenv('VASCO_CDS_GAIA_TABLE'), help='VizieR table ID for Gaia (CDS backend). Env VASCO_CDS_GAIA_TABLE respected.')
     one.add_argument('--cds-ps1-table', default=os.getenv('VASCO_CDS_PS1_TABLE'), help='VizieR table ID for PS1 (CDS backend). Env VASCO_CDS_PS1_TABLE respected.')
@@ -831,7 +823,7 @@ def main(argv: List[str] | None = None) -> int:
     tess.add_argument('--hist-col', default='FWHM_IMAGE')
     tess.add_argument('--workdir', default=None)
     # New: xmatch backend & options
-    tess.add_argument('--xmatch-backend', choices=['local','cds'], default='cds')
+    tess.add_argument('--xmatch-backend', choices=['local','cds'], default='local')
     tess.add_argument('--xmatch-radius-arcsec', type=float, default=5.0)
     tess.add_argument('--cds-gaia-table', default=os.getenv('VASCO_CDS_GAIA_TABLE'))
     tess.add_argument('--cds-ps1-table', default=os.getenv('VASCO_CDS_PS1_TABLE'))
