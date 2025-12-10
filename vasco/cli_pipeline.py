@@ -135,17 +135,12 @@ def _tile_dir(run_dir: Path, stem: str) -> Path:
     td.mkdir(parents=True, exist_ok=True)
     return td
 
-def _tile_base_dir() -> Path:
-    b = Path('data') / 'tiles'
-    b.mkdir(parents=True, exist_ok=True)
-    return b
-
 def _expected_stem(ra: float, dec: float, survey: str, size_arcmin: float) -> str:
     sv_name = dl.SURVEY_ALIASES.get(survey.lower(), survey)
     tag = sv_name.lower().replace(' ', '-')
     return f"{tag}_{ra:.6f}_{dec:.6f}_{int(round(size_arcmin))}arcmin"
 
-def pass  # tile-first: no run-level artifact: Path, counts: dict, results: list, missing: list[dict] | None = None) -> None:
+def _write_overview(run_dir: Path, counts: dict, results: list, missing: list[dict] | None = None) -> None:
     nl = ''
     lines = [
         '# Run Overview',
@@ -172,7 +167,7 @@ def pass  # tile-first: no run-level artifact: Path, counts: dict, results: list
         if len(missing) > 15:
             lines.append(f"… and {len(missing)-15} more missing tiles.")
         lines.append('')
-    pass  # tile-first: no run-level artifact, nl.join(lines) + nl)
+    _write_text(run_dir / 'RUN_OVERVIEW.md', nl.join(lines) + nl)
 
 # ----------------------
 # LDAC → CSV export (robust)
@@ -516,13 +511,11 @@ def _to_float_dec(val: str | float) -> float:
 # ----------------------
 
 def cmd_one(args: argparse.Namespace) -> int:
+    run_dir = _build_run_dir(Path(args.workdir) if args.workdir else None)
+    lg = dl.configure_logger(run_dir / 'logs')
+    out_raw = run_dir / 'raw'; out_raw.mkdir(parents=True, exist_ok=True)
     ra = _to_float_ra(args.ra)
     dec = _to_float_dec(args.dec)
-    stem = _expected_stem(ra, dec, args.survey, args.size_arcmin)
-    tile_dir = _tile_base_dir() / stem
-    tile_dir.mkdir(parents=True, exist_ok=True)
-    lg = dl.configure_logger(tile_dir / 'logs')
-    out_raw = tile_dir / 'raw'; out_raw.mkdir(parents=True, exist_ok=True)
     # STScI-only download; strict POSS-I enforcement (skip non-POSS tiles)
     try:
         fits = dl.fetch_skyview_dss(ra, dec, size_arcmin=args.size_arcmin,
@@ -536,16 +529,16 @@ def cmd_one(args: argparse.Namespace) -> int:
             counts = {'planned': 1, 'downloaded': 0, 'processed': 0}
             missing = [{'ra': float(ra), 'dec': float(dec),
                        'expected_stem': _expected_stem(ra, dec, args.survey, args.size_arcmin)}]
-            pass  # tile-first: no run-level artifact, results)
-            pass  # tile-first: no run-level artifact, counts)
-            pass  # tile-first: no run-level artifact, missing)
-            pass  # tile-first: no run-level artifact, counts, results, missing)
+            _write_json(run_dir / 'RUN_INDEX.json', results)
+            _write_json(run_dir / 'RUN_COUNTS.json', counts)
+            _write_json(run_dir / 'RUN_MISSING.json', missing)
+            _write_overview(run_dir, counts, results, missing)
             print('Run directory:', run_dir)
             print('Planned tiles: 1 Downloaded: 0 Processed: 0 (non-POSS skipped)')
             return 0
         else:
             raise
-    td = tile_dir
+    td = _tile_dir(run_dir, Path(fits).stem)
     try:
         p1, psf, p2 = run_psf_two_pass(fits, td, config_root='configs')
     except ToolMissingError as e:
@@ -597,17 +590,18 @@ def cmd_one(args: argparse.Namespace) -> int:
     results = [{'tile': Path(fits).stem, 'pass1': p1, 'psf': psf, 'pass2': p2}]
     counts = {'planned': 1, 'downloaded': 1, 'processed': 1}
     missing: list[dict] = []
-    pass  # tile-first: no run-level artifact, results)
-    pass  # tile-first: no run-level artifact, counts)
-    pass  # tile-first: no run-level artifact, missing)
-    pass  # tile-first: no run-level artifact, counts, results, missing)
+    _write_json(run_dir / 'RUN_INDEX.json', results)
+    _write_json(run_dir / 'RUN_COUNTS.json', counts)
+    _write_json(run_dir / 'RUN_MISSING.json', missing)
+    _write_overview(run_dir, counts, results, missing)
     print('Run directory:', run_dir)
     print('Planned tiles:', counts['planned'], 'Downloaded:', counts['downloaded'], 'Processed:', counts['processed'])
     return 0
 
 def cmd_tess(args: argparse.Namespace) -> int:
-    lg = dl.configure_logger((_tile_base_dir()) / 'logs')
-    out_raw = (_tile_base_dir()) / 'raw'; out_raw.mkdir(parents=True, exist_ok=True)
+    run_dir = _build_run_dir(Path(args.workdir) if args.workdir else None)
+    lg = dl.configure_logger(run_dir / 'logs')
+    out_raw = run_dir / 'raw'; out_raw.mkdir(parents=True, exist_ok=True)
     center_ra = _to_float_ra(args.center_ra)
     center_dec = _to_float_dec(args.center_dec)
     centers = dl.tessellate_centers(center_ra, center_dec,
@@ -620,7 +614,7 @@ def cmd_tess(args: argparse.Namespace) -> int:
     results: list[Dict[str, Any]] = []
     for fp in fits_list:
         stem = Path(fp).stem
-        td = (_tile_base_dir() / stem); td.mkdir(parents=True, exist_ok=True)
+        td = _tile_dir(run_dir, stem)
         try:
             p1, psf, p2 = run_psf_two_pass(fp, td, config_root='configs')
         except ToolMissingError as e:
@@ -680,10 +674,10 @@ def cmd_tess(args: argparse.Namespace) -> int:
         if exp_stem not in processed_stems:
             missing.append({'ra': float(ra), 'dec': float(dec), 'expected_stem': exp_stem})
     counts = {'planned': planned, 'downloaded': downloaded, 'processed': processed}
-    pass  # tile-first: no run-level artifact, results)
-    pass  # tile-first: no run-level artifact, counts)
-    pass  # tile-first: no run-level artifact, missing)
-    pass  # tile-first: no run-level artifact, counts, results, missing)
+    _write_json(run_dir / 'RUN_INDEX.json', results)
+    _write_json(run_dir / 'RUN_COUNTS.json', counts)
+    _write_json(run_dir / 'RUN_MISSING.json', missing)
+    _write_overview(run_dir, counts, results, missing)
     print('Run directory:', run_dir)
     print('Planned tiles:', planned, 'Downloaded:', downloaded, 'Processed:', processed)
     if missing:
@@ -738,7 +732,7 @@ def cmd_retry_missing(args: argparse.Namespace) -> int:
         if not ok or fp is None:
             still_missing.append(rec); continue
         stem = Path(fp).stem
-        td = (_tile_base_dir() / stem); td.mkdir(parents=True, exist_ok=True)
+        td = _tile_dir(run_dir, stem)
         try:
             p1, psf, p2 = run_psf_two_pass(fp, td, config_root='configs')
             export_and_summarize(p2, td, export=args.export, histogram_col=args.hist_col)
@@ -795,7 +789,7 @@ def cmd_retry_missing(args: argparse.Namespace) -> int:
     _write_json(index_path, results)
     _write_json(counts_path, counts)
     _write_json(missing_path, still_missing)
-    pass  # tile-first: no run-level artifact, counts, results, still_missing)
+    _write_overview(run_dir, counts, results, still_missing)
     print('Run directory:', run_dir)
     print(f"Recovered tiles: {len(recovered)} Remaining missing: {len(still_missing)}")
     return 0
