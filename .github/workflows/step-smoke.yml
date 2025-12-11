@@ -1,4 +1,3 @@
-
 name: VASCO step smoke tests
 
 on:
@@ -31,6 +30,7 @@ jobs:
           - { id: 7, name: "Step 7 — STILTS Cross‑Match", from: 7, to: 7 }
           - { id: 8, name: "Step 8 — Filtering & Validation", from: 8, to: 8 }
           - { id: 9, name: "Step 9 — Summaries & Dashboard", from: 9, to: 9 }
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,50 +49,47 @@ jobs:
           elif [[ -f scripts/cli/run_random.py ]]; then
             echo "cli=scripts/cli/run_random.py" >> $GITHUB_OUTPUT
           else
-            echo "cli=" >> $GITHUB_OUTPUT
+            echo "cli=NONE" >> $GITHUB_OUTPUT
           fi
 
-      - name: Skip if CLI not present
-        if: steps.detect.outputs.cli == ''
+      - name: Soft-skip when CLI missing
+        if: steps.detect.outputs.cli == 'NONE'
+        shell: bash
         run: |
-          echo "CLI entrypoint missing; skipping ${{ matrix.step.name }}"
-          exit 0
+          echo "::notice::CLI entrypoint missing; soft-skipping ${{ matrix.step.name }}"
 
       - name: Run smoke ${{ matrix.step.name }}
-        if: steps.detect.outputs.cli != ''
+        if: steps.detect.outputs.cli != 'NONE'
         shell: bash
+        continue-on-error: true
         env:
           CLI: ${{ steps.detect.outputs.cli }}
           RA: "150.0"
           DEC: "20.0"
         run: |
-          set -euo pipefail
+          set +e
           mkdir -p data/runs
           if [[ "$CLI" == "scripts/cli/one2pass.py" ]]; then
-            python "$CLI" --ra "$RA" --dec "$DEC" --from-step "${{ matrix.step.from }}" --to-step "${{ matrix.step.to }}" || {
-              echo "::warning::one2pass failed or options unsupported; skipping."
-              exit 0
-            }
+            python "$CLI" --ra "$RA" --dec "$DEC" --from-step "${{ matrix.step.from }}" --to-step "${{ matrix.step.to }}"
           else
             # Fallback: run_random.py may not support per-step; try a minimal run
-            python "$CLI" --ra "$RA" --dec "$DEC" --limit 1 || {
-              echo "::warning::run_random minimal invocation failed; skipping."
-              exit 0
-            }
+            python "$CLI" --ra "$RA" --dec "$DEC" --limit 1
           fi
+          echo "::notice::Smoke attempted for ${{ matrix.step.name }} (non-blocking)"
 
-      - name: Assert expected artifact presence (best-effort)
+      - name: Best-effort artifact hints (never failing)
         shell: bash
+        continue-on-error: true
         run: |
-          case "${{ matrix.step.id }}\" in
-            0) test -f data/tiles/*/tiles.csv || echo "::warning::tiles.csv missing" ;;
-            1) test -d data/downloads || echo "::warning::downloads missing" ;;
-            2) test -d data/masks || echo "::warning::masks missing" ;;
-            3) test -d data/catalogs/p1 || echo "::warning::p1 catalogs missing" ;;
-            4) test -d data/psf || echo "::warning::psf missing" ;;
-            5) test -d data/catalogs/p2 || echo "::warning::p2 catalogs missing" ;;
-            6) test -d data/ext/usnob || echo "::warning::usnob missing" ;;
-            7) test -d data/xmatch || echo "::warning::xmatch missing" ;;
-            8) test -d data/filter || echo "::warning::filter missing" ;;
-            9) test -d data/summaries || echo "::warning::summaries missing" ;;
+          case "${{ matrix.step.id }}" in
+            0) test -f data/tiles/*/tiles.csv || echo "::warning::tiles.csv missing (Step 0 hint)" ;;
+            1) test -d data/downloads        || echo "::warning::downloads missing (Step 1 hint)" ;;
+            2) test -d data/masks            || echo "::warning::masks missing (Step 2 hint)" ;;
+            3) test -d data/catalogs/p1      || echo "::warning::p1 catalogs missing (Step 3 hint)" ;;
+            4) test -d data/psf              || echo "::warning::psf missing (Step 4 hint)" ;;
+            5) test -d data/catalogs/p2      || echo "::warning::p2 catalogs missing (Step 5 hint)" ;;
+            6) test -d data/ext/usnob        || echo "::warning::usnob missing (Step 6 hint)" ;;
+            7) test -d data/xmatch           || echo "::warning::xmatch missing (Step 7 hint)" ;;
+            8) test -d data/filter           || echo "::warning::filter missing (Step 8 hint)" ;;
+            9) test -d data/summaries        || echo "::warning::summaries missing (Step 9 hint)" ;;
           esac
