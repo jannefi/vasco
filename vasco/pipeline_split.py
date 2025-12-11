@@ -1,7 +1,7 @@
 from __future__ import annotations
 import os, shutil, subprocess
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, List
 
 class ToolMissingError(Exception):
     pass
@@ -25,29 +25,87 @@ def _fitspath(tile_dir: Path) -> Path:
         raise FileNotFoundError(f"No FITS under {raw}")
     return fits
 
+def _stage_to_run_folder(tile_dir: Path, config_root: Path, names: List[str]) -> None:
+    """
+    Copy required config files into <tile_root> (run folder) with expected bare names.
+    Search order per name:
+      <tile_root>/<name>
+      <tile_root>/configs/<name>
+      <config_root>/<name>
+      <repo_root>/configs/<name>
+    """
+    tile_dir = Path(tile_dir)
+    config_root = Path(config_root)
+    repo_root = Path(__file__).resolve().parents[1]
+    candidates_dirs = [
+        tile_dir,
+        tile_dir / 'configs',
+        config_root,
+        repo_root / 'configs',
+    ]
+    for name in names:
+        src = next((d / name for d in candidates_dirs if (d / name).exists()), None)
+        if src is None:
+            raise FileNotFoundError(
+                f"Missing config file '{name}' in any of: "
+                + ", ".join(str(d) for d in candidates_dirs)
+            )
+        dst = tile_dir / name
+        if src.resolve() != dst.resolve():
+            shutil.copy2(src, dst)
+
+def _make_img_rel_to_run(fits_path: Path, tile_dir: Path) -> Path:
+    """Return the image path relative to <tile_root> CWD for SExtractor/PSFEx runs."""
+    fits_path = Path(fits_path)
+    tile_dir = Path(tile_dir)
+    if fits_path.is_absolute():
+        try:
+            return fits_path.relative_to(tile_dir)
+        except Exception:
+            # Fallback: if it's under raw/, use raw/<filename>; else use the absolute path
+            raw_candidate = tile_dir / 'raw' / fits_path.name
+            return Path('raw') / fits_path.name if raw_candidate.exists() else fits_path
+    else:
+        # If it's a repo-relative path like data/tiles/.../raw/..., reduce to raw/...
+        parts = fits_path.parts
+        if 'raw' in parts:
+            idx = parts.index('raw')
+            return Path(*parts[idx:])
+        return Path('raw') / fits_path.name
+
 def run_pass1(fits_path: str | Path, tile_dir: Path, *, config_root: str = 'configs') -> Tuple[Path, Path]:
-    # Run SExtractor first pass only; returns (pass1_ldac, proto_pass1_fits)
     tile_dir = Path(tile_dir)
     fits_path = Path(fits_path)
     sex_bin = _find_binary(['sex','sextractor'])
     if sex_bin is None:
         _ensure_tool('sex')
+
+    # Stage configs into the run folder so bare names inside .sex resolve
+    _stage_to_run_folder(tile_dir, Path(config_root),
+                         ['sex_pass1.sex', 'default.param', 'default.nnw', 'default.conv'])
     conf = tile_dir / 'sex_pass1.sex'
-    if not conf.exists():
-        conf = Path(config_root) / 'sex_pass1.sex'
-    if not conf.exists():
-        raise FileNotFoundError('sex_pass1.sex not found')
+
+    # Compute image path relative to the run folder CWD
+    img_rel = _make_img_rel_to_run(fits_path, tile_dir)
+
+    # Outputs & logs
     pass1_ldac = tile_dir / 'pass1.ldac'
-    proto = tile_dir / 'proto_pass1.fits'
-    chi = tile_dir / 'chi_pass1.fits'
-    resi = tile_dir / 'resi_pass1.fits'
-    samp = tile_dir / 'samp_pass1.fits'
-    log = tile_dir / 'sex.out'
-    err = tile_dir / 'sex.err'
-    cmd = [sex_bin or 'sex', str(fits_path), '-c', str(conf), '-CATALOG_NAME', str(pass1_ldac), '-CATALOG_TYPE', 'FITS_LDAC', '-CHECKIMAGE_NAME', f'{proto},{chi},{resi},{samp}']
-    with open(log,'w') as l, open(err,'w') as e:
-        rc = subprocess.run(cmd, stdout=l, stderr=e).returncode
-        if rc != 0:
+    proto      = tile_dir / 'proto_pass1.fits'
+    chi        = tile_dir / 'chi_pass1.fits'
+    resi       = tile_dir / 'resi_pass1.fits'
+    samp       = tile_dir / 'samp_pass1.fits'
+    log        = tile_dir / 'sex.out'
+    err        = tile_dir / 'sex.err'
+
+    cmd = [sex_bin or 'sex', str(img_rel), '-c', str(conf),
+           '-CATALOG_NAME', str(pass1_ldac), '-CATALOG_TYPE', 'FITS_LDAC']
+    with open(log, 'w') as l, open(err, 'w') as e:
+        rc = subprocess.run(cmd, stdout=l, stderr=e, cwd=str(tile_dir)).returncode
+    if rc != 0:
+        try:
+            tail = '\n'.join(Path(err).read_text(encoding='utf-8', errors='ignore').splitlines()[-25:])
+            raise RuntimeError(f'SExtractor pass1 failed (rc={rc}). See sex.err tail:\n{tail}')
+        except Exception:
             raise RuntimeError(f'SExtractor pass1 failed: rc={rc}')
     return pass1_ldac, proto
 
@@ -55,19 +113,19 @@ def run_psfex(pass1_ldac: str | Path, tile_dir: Path, *, config_root: str = 'con
     tile_dir = Path(tile_dir)
     pass1_ldac = Path(pass1_ldac)
     _ensure_tool('psfex')
+
+    _stage_to_run_folder(tile_dir, Path(config_root), ['psfex.conf'])
     conf = tile_dir / 'psfex.conf'
-    if not conf.exists():
-        conf = Path(config_root) / 'psfex.conf'
-    if not conf.exists():
-        raise FileNotFoundError('psfex.conf not found')
+
     psf = tile_dir / 'pass1.psf'
     out = tile_dir / 'psfex.out'
     err = tile_dir / 'psfex.err'
+
     cmd = ['psfex', str(pass1_ldac), '-c', str(conf), '-OUTFILE_NAME', str(psf)]
-    with open(out,'w') as o, open(err,'w') as e:
-        rc = subprocess.run(cmd, stdout=o, stderr=e).returncode
-        if rc != 0:
-            raise RuntimeError(f'PSFEx failed: rc={rc}')
+    with open(out, 'w') as o, open(err, 'w') as e:
+        rc = subprocess.run(cmd, stdout=o, stderr=e, cwd=str(tile_dir)).returncode
+    if rc != 0:
+        raise RuntimeError(f'PSFEx failed: rc={rc}')
     return psf
 
 def run_pass2(fits_path: str | Path, tile_dir: Path, psf_path: str | Path, *, config_root: str = 'configs') -> Path:
@@ -77,17 +135,21 @@ def run_pass2(fits_path: str | Path, tile_dir: Path, psf_path: str | Path, *, co
     sex_bin = _find_binary(['sex','sextractor'])
     if sex_bin is None:
         _ensure_tool('sex')
+
+    _stage_to_run_folder(tile_dir, Path(config_root),
+                         ['sex_pass2.sex', 'default.param', 'default.nnw', 'default.conv'])
     conf = tile_dir / 'sex_pass2.sex'
-    if not conf.exists():
-        conf = Path(config_root) / 'sex_pass2.sex'
-    if not conf.exists():
-        raise FileNotFoundError('sex_pass2.sex not found')
+
+    img_rel = _make_img_rel_to_run(fits_path, tile_dir)
+
     pass2_ldac = tile_dir / 'pass2.ldac'
     log = tile_dir / 'sex.out'
     err = tile_dir / 'sex.err'
-    cmd = [sex_bin or 'sex', str(fits_path), '-c', str(conf), '-CATALOG_NAME', str(pass2_ldac), '-CATALOG_TYPE', 'FITS_LDAC', '-PSF_NAME', str(psf_path)]
-    with open(log,'a') as l, open(err,'a') as e:
-        rc = subprocess.run(cmd, stdout=l, stderr=e).returncode
-        if rc != 0:
-            raise RuntimeError(f'SExtractor pass2 failed: rc={rc}')
+
+    cmd = [sex_bin or 'sex', str(img_rel), '-c', str(conf),
+           '-CATALOG_NAME', str(pass2_ldac), '-CATALOG_TYPE', 'FITS_LDAC', '-PSF_NAME', str(psf_path)]
+    with open(log, 'a') as l, open(err, 'a') as e:
+        rc = subprocess.run(cmd, stdout=l, stderr=e, cwd=str(tile_dir)).returncode
+    if rc != 0:
+        raise RuntimeError(f'SExtractor pass2 failed: rc={rc}')
     return pass2_ldac
