@@ -530,7 +530,7 @@ def cmd_one(args: argparse.Namespace) -> int:
             return 0
         else:
             raise
-    td = _tile_dir(run_dir, Path(fits).stem)
+    td = run_dir
     try:
         p1, psf, p2 = run_psf_two_pass(fits, td, config_root='configs')
     except ToolMissingError as e:
