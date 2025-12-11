@@ -10,7 +10,7 @@
 ## Tasks
 - Normalize headers; ensure WCS is consistent
 - Run SExtractor (1st pass) to generate initial catalogs
-- Persist runs under `data/runs/run-YYYYMMDD_HHMMSS/`
+- **Persist catalogs to** `data/tiles/<tile_id>/catalogs/`
 
 ## Validations (Definition of Done)
 - Catalogs exist (`*.cat` / ECSV) and rows > 0
@@ -18,5 +18,5 @@
 - Logs exist and contain no ERROR
 
 ## Logs & Artifacts
-- `logs/sextractor/`
-- `data/runs/.../catalogs/`
+- `logs/sextractor/<tile_id>/`
+- `data/tiles/<tile_id>/catalogs/`

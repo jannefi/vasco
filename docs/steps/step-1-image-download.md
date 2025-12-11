@@ -7,7 +7,7 @@
 - `tiles.csv` present and valid
 
 ## Tasks
-- Create/verify `data/downloads/<run_id>/`
+- Create/verify `data/tiles/<tile_id>/downloads/`
 - Run downloader with `--survey dss1-red --retry 5 --backoff 1.5`
 - Save `<tile_id>.fits` per tile; write `downloads.manifest.json`
 - Record endpoint, survey, retries
@@ -18,5 +18,5 @@
 - Basic checksum recorded
 
 ## Logs & Artifacts
-- Logs under `logs/downloader/`
+- Logs under `logs/downloader/<tile_id>/`
 - `downloads.manifest.json` lists tiles & checksums
