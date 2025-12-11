@@ -378,8 +378,7 @@ def cmd_step6_summarize(args: argparse.Namespace) -> int:
         return 2
     try:
         export_and_summarize(p2, run_dir, export=args.export, histogram_col=args.hist_col)
-        _write_text(run_dir / 'RUN_SUMMARY.md', '# Summary written
-')
+        _write_text(run_dir / 'RUN_SUMMARY.md', '# Summary written')
         print('[STEP6] Summary + exports written.')
         return 0
     except Exception as e:
