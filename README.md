@@ -53,6 +53,7 @@ python -m vasco.cli_pipeline one2pass \
   --ra 150.000 --dec 20.000 \
   --size-arcmin 30 \
   --survey dss1-red \
+  --xmatch-backend cds \
   --pixel-scale-arcsec 1.7 \
   --workdir data/tiles/tile-smoke-test
 ```
