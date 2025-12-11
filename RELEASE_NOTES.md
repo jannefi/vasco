@@ -1,4 +1,8 @@
-# VASCO v0.06.91 — PS1+Gaia x‑match hardening + USNO B.10, bright star mask
+# VASCO v0.07.1 — work split version
+
+**Highlights**
+- All work 6 work steps have been separated
+- Randomized run reworked
 
 **Highlights**
 - Possibility to get USNO-B data via VizieR I/284 
