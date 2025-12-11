@@ -17,5 +17,5 @@
 - Summary CSV/MD produced
 
 ## Logs & Artifacts
-- `logs/stilts/`
-- `data/runs/.../xmatch/`
+- `logs/stilts/<tile_id>/`
+- `data/tiles/<tile_id>/xmatch/`

@@ -16,5 +16,5 @@
 - Improved star/galaxy separation metrics present
 
 ## Logs & Artifacts
-- `logs/psfex/`, `logs/sextractor_psf/`
-- `data/runs/.../psf/`
+- `logs/psfex/<tile_id>/`, `logs/sextractor_psf/<tile_id>/`
+- `data/tiles/<tile_id>/psf/`
