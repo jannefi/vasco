@@ -117,7 +117,7 @@ def _build_run_dir(base: str | Path | None = None) -> Path:
     base = Path(base) if base else Path('data') / 'runs'
     base.mkdir(parents=True, exist_ok=True)
     ts = time.strftime('run-%Y%m%d_%H%M%S')
-    rd = base / ts
+    rd = base 
     rd.mkdir(parents=True, exist_ok=True)
     return rd
 
