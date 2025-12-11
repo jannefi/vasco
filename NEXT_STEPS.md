@@ -5,10 +5,10 @@ Congrats — all 11 step issues, PR template, workflow gates, smoke tests, and C
 
 ## 1) Operate the step issues (today)
 
-- [ ] **Assign owners** (you or others) to each step issue (#4–#14).
-- [ ] **Add acceptance criteria** to each issue using the Step Checklists in `PLAN.md`.
-- [ ] **Set due date** via milestone (optional).
-- [ ] **Link PRs** to issues with `Closes #<id>` in the PR body.
+- [X] **Assign owners** (you or others) to each step issue (#4–#14).
+- [X] **Add acceptance criteria** to each issue using the Step Checklists in `PLAN.md`.
+- [X] **Set due date** via milestone (optional).
+- [X] **Link PRs** to issues with `Closes #<id>` in the PR body.
 
 ### Commands (GitHub CLI)
 ```bash
@@ -25,9 +25,9 @@ done
 
 ## 2) CI hardening options (opt‑in)
 
-- [ ] **Require CODEOWNERS review** on `main` via branch protection.
-- [ ] **Block direct pushes** to `main`; allow only PR merges.
-- [ ] **Require the new checks**: PR issue‑link gate + step smoke.
+- [X] **Require CODEOWNERS review** on `main` via branch protection.
+- [X] **Block direct pushes** to `main`; allow only PR merges.
+- [X] **Require the new checks**: PR issue‑link gate + step smoke.
 
 > UI path: *Settings → Branches → Branch protection rules → Add rule* (Branch name: `main`).
 
