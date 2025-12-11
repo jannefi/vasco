@@ -1,0 +1,32 @@
+diff --git a/vasco/cli_pipeline.py b/vasco/cli_pipeline.py
+--- a/vasco/cli_pipeline.py
++++ b/vasco/cli_pipeline.py
+@@ -374,7 +374,17 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0,
+         print('[POST][CDS]', tile_dir.name, 'Gaia xmatch ->', out_gaia)
+         _validate_within_5_arcsec_unit_tolerant(out_gaia)
+-        time.sleep(45.0) # courtesy delay to avoid immediate CDS overload
++        # Courtesy pause before the next CDS call (configurable via env)
++        try:
++            import os, time
++            pause_sec = float(os.getenv('VASCO_CDS_PAUSE_SECONDS', '8'))
++            if pause_sec > 0:
++                time.sleep(pause_sec)
++        except Exception:
++            pass
+@@ -389,6 +399,15 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0,
+         print('[POST][CDS]', tile_dir.name, 'PS1 xmatch ->', out_ps1)
+         _validate_within_5_arcsec_unit_tolerant(out_ps1)
++        # Optional pause after PS1 as well
++        try:
++            import os, time
++            pause_sec = float(os.getenv('VASCO_CDS_PAUSE_SECONDS', '8'))
++            if pause_sec > 0:
++                time.sleep(pause_sec)
++        except Exception:
++            pass
+@@ -598,7 +617,7 @@ def main(argv: List[str] | None = None) -> int:
+-    one.add_argument('--xmatch-backend', choices=['local','cds'], default='local', help='Choose local (tskymatch2) or CDS (cdsskymatch) backend')
++    one.add_argument('--xmatch-backend', choices=['local','cds'], default='cds', help='Choose local (tskymatch2) or CDS (cdsskymatch) backend')
+@@ -630,7 +649,7 @@ def main(argv: List[str] | None = None) -> int:
+-    tess.add_argument('--xmatch-backend', choices=['local','cds'], default='local')
++    tess.add_argument('--xmatch-backend', choices=['local','cds'], default='cds')
