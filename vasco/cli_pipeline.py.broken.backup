@@ -1,0 +1,16 @@
+
+
+import os as _os
+import time as _time
+
+def _cds_courtesy_pause():
+    try:
+        pause_sec = float(_os.getenv('VASCO_CDS_PAUSE_SECONDS', '8'))
+    except Exception:
+        pause_sec = 8.0
+    if pause_sec > 0:
+        try:
+            _time.sleep(pause_sec)
+        except Exception:
+            pass
+

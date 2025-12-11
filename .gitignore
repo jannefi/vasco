@@ -28,7 +28,9 @@ MANIFEST
 
 # misc
 *.zip
+data/
 data/runs/
+github_issues/
 data/*.json
 data/run_*
 plate_tiles*
