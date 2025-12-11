@@ -1,0 +1,42 @@
+
+name: PR must link a step issue
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+
+jobs:
+  validate-issue-link:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR body for linked issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+            const issueRefs = [...new Set((body.match(/#\d+/g) || []).map(s => s.slice(1)))];
+            if (issueRefs.length === 0) {
+              core.setFailed('PR must reference at least one issue (e.g., Closes #4).');
+              return;
+            }
+            const { owner, repo } = context.repo;
+            let ok = false;
+            for (const num of issueRefs) {
+              try {
+                const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: Number(num) });
+                const labels = (issue.labels || []).map(l => typeof l === 'string' ? l : l.name);
+                if (labels.includes('vasco') && labels.includes('step')) {
+                  ok = true;
+                }
+              } catch (e) {
+                core.info(`Skipping invalid issue reference #${num}: ${e.message}`);
+              }
+            }
+            if (!ok) {
+              core.setFailed('PR must reference at least one **step** issue labeled with both `vasco` and `step`.');
+            }

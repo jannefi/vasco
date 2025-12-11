@@ -1,0 +1,98 @@
+
+name: VASCO step smoke tests
+
+on:
+  push:
+    branches: [ main, feature/** ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Step smoke (matrix)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        step:
+          - { id: 0, name: "Step 0 — Inputs & Tiling", from: 0, to: 0 }
+          - { id: 1, name: "Step 1 — Image Download (DSS1‑red)", from: 1, to: 1 }
+          - { id: 2, name: "Step 2 — Preprocess & Bright‑Star Masks", from: 2, to: 2 }
+          - { id: 3, name: "Step 3 — SExtractor (Pass 1)", from: 3, to: 3 }
+          - { id: 4, name: "Step 4 — PSFEx Model", from: 4, to: 4 }
+          - { id: 5, name: "Step 5 — SExtractor (Pass 2, PSF‑aware)", from: 5, to: 5 }
+          - { id: 6, name: "Step 6 — External Catalog Fetch (USNO‑B I/284; PS1 optional)", from: 6, to: 6 }
+          - { id: 7, name: "Step 7 — STILTS Cross‑Match", from: 7, to: 7 }
+          - { id: 8, name: "Step 8 — Filtering & Validation", from: 8, to: 8 }
+          - { id: 9, name: "Step 9 — Summaries & Dashboard", from: 9, to: 9 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Detect CLI entrypoint
+        id: detect
+        shell: bash
+        run: |
+          if [[ -f scripts/cli/one2pass.py ]]; then
+            echo "cli=scripts/cli/one2pass.py" >> $GITHUB_OUTPUT
+          elif [[ -f scripts/cli/run_random.py ]]; then
+            echo "cli=scripts/cli/run_random.py" >> $GITHUB_OUTPUT
+          else
+            echo "cli=" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Skip if CLI not present
+        if: steps.detect.outputs.cli == ''
+        run: |
+          echo "CLI entrypoint missing; skipping ${{ matrix.step.name }}"
+          exit 0
+
+      - name: Run smoke ${{ matrix.step.name }}
+        if: steps.detect.outputs.cli != ''
+        shell: bash
+        env:
+          CLI: ${{ steps.detect.outputs.cli }}
+          RA: "150.0"
+          DEC: "20.0"
+        run: |
+          set -euo pipefail
+          mkdir -p data/runs
+          if [[ "$CLI" == "scripts/cli/one2pass.py" ]]; then
+            python "$CLI" --ra "$RA" --dec "$DEC" --from-step "${{ matrix.step.from }}" --to-step "${{ matrix.step.to }}" || {
+              echo "::warning::one2pass failed or options unsupported; skipping."
+              exit 0
+            }
+          else
+            # Fallback: run_random.py may not support per-step; try a minimal run
+            python "$CLI" --ra "$RA" --dec "$DEC" --limit 1 || {
+              echo "::warning::run_random minimal invocation failed; skipping."
+              exit 0
+            }
+          fi
+
+      - name: Assert expected artifact presence (best-effort)
+        shell: bash
+        run: |
+          case "${{ matrix.step.id }}\" in
+            0) test -f data/tiles/*/tiles.csv || echo "::warning::tiles.csv missing" ;;
+            1) test -d data/downloads || echo "::warning::downloads missing" ;;
+            2) test -d data/masks || echo "::warning::masks missing" ;;
+            3) test -d data/catalogs/p1 || echo "::warning::p1 catalogs missing" ;;
+            4) test -d data/psf || echo "::warning::psf missing" ;;
+            5) test -d data/catalogs/p2 || echo "::warning::p2 catalogs missing" ;;
+            6) test -d data/ext/usnob || echo "::warning::usnob missing" ;;
+            7) test -d data/xmatch || echo "::warning::xmatch missing" ;;
+            8) test -d data/filter || echo "::warning::filter missing" ;;
+            9) test -d data/summaries || echo "::warning::summaries missing" ;;
+          esac

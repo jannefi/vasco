@@ -1,0 +1,31 @@
+
+# CODEOWNERS for VASCO
+# Default owner (fallback for all paths)
+* @jannefi
+
+# Pipelines and CLI
+/scripts/ @jannefi
+/scripts/cli/ @jannefi
+/scripts/pipeline/ @jannefi
+/workflows/ @jannefi
+
+# Configs and step wrappers
+/config/ @jannefi
+/workflows/00_inputs_tiling/ @jannefi
+/workflows/01_download/ @jannefi
+/workflows/02_preprocess_masks/ @jannefi
+/workflows/03_sextractor_p1/ @jannefi
+/workflows/04_psfex/ @jannefi
+/workflows/05_sextractor_p2/ @jannefi
+/workflows/06_ext_usnob/ @jannefi
+/workflows/07_xmatch_stilts/ @jannefi
+/workflows/08_filter_validate/ @jannefi
+/workflows/09_summarize_dashboard/ @jannefi
+
+# CI and dashboards
+/.github/workflows/ @jannefi
+/dashboard/ @jannefi
+
+# Optional: add more owners (replace with valid GitHub handles)
+# /scripts/validators/ @<add-handle-here>
+# /tests/ @<add-handle-here>

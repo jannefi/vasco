@@ -260,3 +260,14 @@ scripts/*_helper.py
 scripts/fix_future_and_helper_order.py
 scripts/verify_versions.sh
 vasco/cli_pipeline.py.broken.backup
+
+# Local helper artifacts
+github_issues/
+github_issues.zip
+
+# Local scratch and ad-hoc artifacts
+scratch/
+*.zip
+
+# Local scratch
+patches/
