@@ -2,7 +2,8 @@
 
 
 Current randomized run test (12-Dec-2025):
-- 12/12 implement a fix: when using the CDS backend in Step 4, the pipeline will skip PS1 x-match for tiles whose Dec < −30° (outside Pan-STARRS1 3π coverage). The skip is
+- 12/12 implemented a fix to disrecard all non POSSI-E plates from download and processing. FITS header is now also parsed -> -tilename-.fits.header.json under raw folder.
+- 12/12 implemented a fix: when using the CDS backend in Step 4, the pipeline will skip PS1 x-match for tiles whose Dec < −30° (outside Pan-STARRS1 3π coverage). The skip is
 recorded in `xmatch/STEP4_CDS.log within the tile folder. Shorter pause between CDS calls.
 - 11/12: split the work into 6 different steps. See [Random run info](README-RUN-RANDOM.md)
   - This is still WIP. Testing, fixing and adding new features when time permits
