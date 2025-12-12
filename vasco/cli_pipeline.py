@@ -1,3 +1,4 @@
+
 from __future__ import annotations
 import argparse, json, time, subprocess, os, shutil
 from pathlib import Path
@@ -16,7 +17,6 @@ from vasco.utils.cdsskymatch import cdsskymatch, StiltsNotFound
 def _ensure_tool_cli(tool: str) -> None:
     if shutil.which(tool) is None:
         raise RuntimeError(f"Required tool '{tool}' not found in PATH.")
-
 
 def _validate_within5_arcsec_unit_tolerant(xmatch_csv: Path) -> Path:
     import csv
@@ -46,29 +46,26 @@ def _validate_within5_arcsec_unit_tolerant(xmatch_csv: Path) -> Path:
 
     for a,b in [('ra','dec'), ('RAJ2000','DEJ2000'), ('RA_ICRS','DE_ICRS'), ('RA','DEC')]:
         if a in cols and b in cols:
-            cmd = ("cmd=addcol angDist_arcsec " + f"3600*skyDistanceDegrees(ALPHA_J2000,DELTA_J2000,{a},{b}); " + "select angDist_arcsec<=5")
+            cmd = ("cmd=addcol angDist_arcsec "
+                   + f"3600*skyDistanceDegrees(ALPHA_J2000,DELTA_J2000,{a},{b}); "
+                   + "select angDist_arcsec<=5")
             subprocess.run(['stilts','tpipe', f'in={str(xmatch_csv)}', cmd, f'out={str(out)}', 'ofmt=csv'], check=True)
             return out
     return _write_empty()
-
 
 def _build_run_dir(base: str | Path | None = None) -> Path:
     base = Path(base) if base else Path('data') / 'runs'
     base.mkdir(parents=True, exist_ok=True)
     return base
 
-
 def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding='utf-8')
-
 
 def _write_json(path: Path, obj) -> None:
     path.write_text(json.dumps(obj, indent=2), encoding='utf-8')
 
-
 def _read_json(path: Path):
     return json.loads(Path(path).read_text(encoding='utf-8'))
-
 
 def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
     tile_dir = Path(tile_dir)
@@ -100,13 +97,12 @@ def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
     subprocess.run(['stilts','tcopy', f'in={str(pass2_ldac)}+2', f'out={str(sex_csv)}', 'ofmt=csv'], check=True)
     return sex_csv
 
-
 def _csv_has_radec(csv_path: Path) -> bool:
     import csv
     try:
         with open(csv_path, newline='') as f:
             hdr = next(csv.reader(f))
-        cols = {h.strip() for h in hdr}
+            cols = {h.strip() for h in hdr}
         for a,b in [('ra','dec'), ('RA_ICRS','DE_ICRS'), ('RAJ2000','DEJ2000'), ('RA','DEC'), ('lon','lat'), ('raMean','decMean'), ('RAMean','DecMean'), ('ALPHA_J2000','DELTA_J2000')]:
             if a in cols and b in cols:
                 return True
@@ -114,13 +110,12 @@ def _csv_has_radec(csv_path: Path) -> bool:
     except Exception:
         return False
 
-
 def _detect_radec_columns(csv_path: Path) -> Tuple[str, str] | None:
     import csv
     try:
         with open(csv_path, newline='') as f:
             hdr = next(csv.reader(f))
-        cols = [h.strip() for h in hdr]
+            cols = [h.strip() for h in hdr]
         pairs = [('ALPHA_J2000','DELTA_J2000'), ('RAJ2000','DEJ2000'), ('RA_ICRS','DE_ICRS'), ('ra','dec'), ('RA','DEC'), ('lon','lat'), ('raMean','decMean'), ('RAMean','DecMean')]
         for a,b in pairs:
             if a in cols and b in cols:
@@ -141,13 +136,38 @@ def _csv_row_count(path: Path) -> int:
     except Exception:
         return -1
 
-
 def _cds_log(xdir: Path, msg: str) -> None:
     xdir = Path(xdir)
     log = xdir / 'STEP4_CDS.log'
     with log.open('a', encoding='utf-8') as f:
-        f.write(msg.rstrip() + "")
-    print(msg)
+        f.write(msg.rstrip('') + "")
+    print(msg.rstrip(''))
+
+# ---- NEW: helpers to derive tile center for coverage checks ----
+
+def _coords_from_tile_dirname(name: str) -> tuple[float, float] | None:
+    """Parse 'tile-RA<ra>-DEC<dec>' -> (ra, dec) if possible."""
+    try:
+        if not name.startswith('tile-RA') or '-DEC' not in name:
+            return None
+        ra_part = name[len('tile-RA'): name.index('-DEC')]
+        dec_part = name[name.index('-DEC') + len('-DEC') :]
+        return float(ra_part), float(dec_part)
+    except Exception:
+        return None
+
+def _tile_center_from_index_or_name(run_dir: Path) -> tuple[float, float] | None:
+    # Try RUN_INDEX.json first
+    try:
+        recs = _read_json(Path(run_dir) / 'RUN_INDEX.json')
+        if recs:
+            stem = Path(recs[0].get('tile','')).name
+            parts = stem.split('_')
+            return float(parts[1]), float(parts[2])
+    except Exception:
+        pass
+    # Fallback: parse from directory name
+    return _coords_from_tile_dirname(Path(run_dir).name)
 
 # --- commands ---
 
@@ -156,20 +176,17 @@ def _expected_stem(ra: float, dec: float, survey: str, size_arcmin: float) -> st
     tag = sv_name.lower().replace(' ', '-')
     return f"{tag}_{ra:.6f}_{dec:.6f}_{int(round(size_arcmin))}arcmin"
 
-
 def _to_float_ra(val: str | float) -> float:
     try:
         return float(val)
     except Exception:
         return float(_parse_ra(str(val)))
 
-
 def _to_float_dec(val: str | float) -> float:
     try:
         return float(val)
     except Exception:
         return float(_parse_dec(str(val)))
-
 
 def cmd_one(args: argparse.Namespace) -> int:
     run_dir = _build_run_dir(Path(args.workdir) if args.workdir else None)
@@ -194,7 +211,6 @@ def cmd_one(args: argparse.Namespace) -> int:
     psf = run_psfex(p1, run_dir, config_root='configs')
     p2 = run_pass2(fits, run_dir, psf, config_root='configs')
     export_and_summarize(p2, run_dir, export=args.export, histogram_col=args.hist_col)
-
     radius_arcmin = args.size_arcmin * (2 ** 0.5) * 0.5
     backend = args.xmatch_backend
     if backend == 'local':
@@ -214,7 +230,7 @@ def cmd_one(args: argparse.Namespace) -> int:
                 print('[POST][INFO]', run_dir.name, 'USNO-B disabled by env — skipping fetch')
             else:
                 fetch_usnob_neighbourhood(run_dir, ra, dec, radius_arcmin)
-            print('[POST]', run_dir.name, 'USNO-B (VizieR) -> catalogs/usnob_neighbourhood.csv')
+                print('[POST]', run_dir.name, 'USNO-B (VizieR) -> catalogs/usnob_neighbourhood.csv')
         except Exception as e:
             print('[POST][WARN]', run_dir.name, 'USNO-B fetch failed:', e)
         try:
@@ -223,7 +239,8 @@ def cmd_one(args: argparse.Namespace) -> int:
             print('[POST][WARN] xmatch failed for', run_dir.name, ':', e)
     elif backend == 'cds':
         try:
-            _cds_xmatch_tile(run_dir, p2, radius_arcsec=float(args.xmatch_radius_arcsec), cds_gaia_table=args.cds_gaia_table, cds_ps1_table=args.cds_ps1_table)
+            _cds_xmatch_tile(run_dir, p2, radius_arcsec=float(args.xmatch_radius_arcsec),
+                             cds_gaia_table=args.cds_gaia_table, cds_ps1_table=args.cds_ps1_table)
         except Exception as e:
             print('[POST][WARN] CDS xmatch failed for', run_dir.name, ':', e)
     else:
@@ -237,7 +254,6 @@ def cmd_one(args: argparse.Namespace) -> int:
     _write_overview(run_dir, counts, results, [])
     print('Run directory:', run_dir)
     return 0
-
 
 def cmd_step1_download(args: argparse.Namespace) -> int:
     run_dir = _build_run_dir(Path(args.workdir) if args.workdir else None)
@@ -266,7 +282,6 @@ def cmd_step1_download(args: argparse.Namespace) -> int:
     print('[STEP1] Downloaded FITS ->', fits)
     return 0
 
-
 def cmd_step2_pass1(args: argparse.Namespace) -> int:
     run_dir = _build_run_dir(Path(args.workdir) if args.workdir else None)
     raw = run_dir / 'raw'
@@ -278,7 +293,6 @@ def cmd_step2_pass1(args: argparse.Namespace) -> int:
     _write_json(run_dir / 'RUN_INDEX.json', [{'tile': Path(fits).stem, 'pass1': str(p1)}])
     print('[STEP2] pass1 ->', p1)
     return 0
-
 
 def cmd_step3_psf_and_pass2(args: argparse.Namespace) -> int:
     run_dir = _build_run_dir(Path(args.workdir) if args.workdir else None)
@@ -292,7 +306,6 @@ def cmd_step3_psf_and_pass2(args: argparse.Namespace) -> int:
     p2 = run_pass2(fits, run_dir, psf, config_root='configs')
     print('[STEP3] psf ->', psf, '; pass2 ->', p2)
     return 0
-
 
 def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> None:
     tile_dir = Path(tile_dir)
@@ -320,8 +333,7 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> No
             subprocess.run(['stilts','tskymatch2', f'in1={str(sex_csv)}', f'in2={str(usnob_csv)}', f'ra1={ra1}', f'dec1={dec1}', f'ra2={ra2}', f'dec2={dec2}', f'error={radius_arcsec}', 'join=1and2', f'out={str(out_usnob)}', 'ofmt=csv'], check=True)
             print('[POST]', tile_dir.name, 'USNO-B xmatch ->', out_usnob)
     except FileNotFoundError:
-        print('[POST][WARN]', tile_dir.name, 'STILTS not found; USNO-B skipped')
-
+        print('[POST][WARN]', tile_dir.name, 'STILTS not found; USNOB skipped')
 
 def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0, cds_gaia_table: str | None = None, cds_ps1_table: str | None = None) -> None:
     tile_dir = Path(tile_dir)
@@ -347,8 +359,16 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0, cds_ga
     else:
         _cds_log(xdir, "[STEP4][CDS] Gaia table not provided — skipping")
 
-    # PS1
+    # PS1 — implement Fix A: skip automatically south of -30 deg
     if cds_ps1_table:
+        # Honor optional env disable for consistency with local path
+        if os.getenv('VASCO_DISABLE_PS1'):
+            _cds_log(xdir, "[STEP4][CDS] PS1 disabled by env — skipping")
+            return
+        center = _tile_center_from_index_or_name(tile_dir)
+        if center and center[1] < -30.0:
+            _cds_log(xdir, f"[STEP4][CDS] PS1 skipped (Dec={center[1]:.3f} < -30°, outside survey coverage)")
+            return
         out_ps1 = xdir / 'sex_ps1_xmatch_cdss.csv'
         try:
             _cds_log(xdir, f"[STEP4][CDS] Query PS1 table {cds_ps1_table} -> {out_ps1.name}")
@@ -368,7 +388,6 @@ def cmd_step4_xmatch(args: argparse.Namespace) -> int:
     if not p2.exists():
         print('[STEP4][ERROR] pass2.ldac missing. Run step3-psf-and-pass2 first.')
         return 2
-
     backend = args.xmatch_backend
     if backend == 'local':
         try:
@@ -393,19 +412,17 @@ def cmd_step4_xmatch(args: argparse.Namespace) -> int:
                 print('[STEP4][INFO]', run_dir.name, 'USNO-B disabled by env')
             else:
                 fetch_usnob_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
-            print('[STEP4]', run_dir.name, 'USNO-B -> catalogs/usnob_neighbourhood.csv')
+                print('[STEP4]', run_dir.name, 'USNO-B -> catalogs/usnob_neighbourhood.csv')
         except Exception as e:
             print('[STEP4][WARN]', run_dir.name, 'USNO-B fetch failed:', e)
         _post_xmatch_tile(run_dir, p2, radius_arcsec=float(args.xmatch_radius_arcsec))
         return 0
-
     if backend == 'cds':
-        _cds_xmatch_tile(run_dir, p2, radius_arcsec=float(args.xmatch_radius_arcsec), cds_gaia_table=args.cds_gaia_table, cds_ps1_table=args.cds_ps1_table)
+        _cds_xmatch_tile(run_dir, p2, radius_arcsec=float(args.xmatch_radius_arcsec),
+                         cds_gaia_table=args.cds_gaia_table, cds_ps1_table=args.cds_ps1_table)
         return 0
-
     print('[STEP4][WARN]', run_dir.name, 'Unknown backend:', backend)
     return 0
-
 
 def cmd_step5_filter_within5(args: argparse.Namespace) -> int:
     run_dir = _build_run_dir(Path(args.workdir) if args.workdir else None)
@@ -423,7 +440,6 @@ def cmd_step5_filter_within5(args: argparse.Namespace) -> int:
     print(f'[STEP5] Wrote within5 CSVs for {wrote} xmatch files.')
     return 0
 
-
 def cmd_step6_summarize(args: argparse.Namespace) -> int:
     run_dir = _build_run_dir(Path(args.workdir) if args.workdir else None)
     p2 = run_dir / 'pass2.ldac'
@@ -434,7 +450,6 @@ def cmd_step6_summarize(args: argparse.Namespace) -> int:
     _write_text(run_dir / 'RUN_SUMMARY.md', '# Summary written')
     print('[STEP6] Summary + exports written.')
     return 0
-
 
 def _write_overview(run_dir: Path, counts: dict, results: list, missing: list[dict] | None = None) -> None:
     lines = ['# Run Overview','', f"**Planned**: {counts.get('planned', 0)}", f"**Downloaded**: {counts.get('downloaded', 0)}", f"**Processed**: {counts.get('processed', 0)}", '']
@@ -457,7 +472,6 @@ def _write_overview(run_dir: Path, counts: dict, results: list, missing: list[di
         lines.append('')
     _write_text(run_dir / 'RUN_OVERVIEW.md', ''.join(lines) + '')
 
-
 def main(argv: List[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog='vasco.cli_pipeline', description='VASCO pipeline orchestrator (true split)')
     sub = p.add_subparsers(dest='cmd')
@@ -474,7 +488,7 @@ def main(argv: List[str] | None = None) -> int:
     one.add_argument('--xmatch-backend', choices=['local','cds'], default='local')
     one.add_argument('--xmatch-radius-arcsec', type=float, default=5.0)
     one.add_argument('--cds-gaia-table', default=os.getenv('VASCO_CDS_GAIA_TABLE'))
-    one.add_argument('--cds-ps1-table',  default=os.getenv('VASCO_CDS_PS1_TABLE'))
+    one.add_argument('--cds-ps1-table', default=os.getenv('VASCO_CDS_PS1_TABLE'))
     one.set_defaults(func=cmd_one)
 
     s1 = sub.add_parser('step1-download', help='Download tile FITS to raw/')
@@ -500,7 +514,7 @@ def main(argv: List[str] | None = None) -> int:
     s4.add_argument('--xmatch-radius-arcsec', type=float, default=5.0)
     s4.add_argument('--size-arcmin', type=float, default=30.0)
     s4.add_argument('--cds-gaia-table', default=os.getenv('VASCO_CDS_GAIA_TABLE'))
-    s4.add_argument('--cds-ps1-table',  default=os.getenv('VASCO_CDS_PS1_TABLE'))
+    s4.add_argument('--cds-ps1-table', default=os.getenv('VASCO_CDS_PS1_TABLE'))
     s4.set_defaults(func=cmd_step4_xmatch)
 
     s5 = sub.add_parser('step5-filter-within5', help='Filter xmatch to <=5 arcsec')
