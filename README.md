@@ -265,7 +265,20 @@ See `LICENSE` (if present). PRs/issues are welcome for reliability, data provena
 
 ---
 
-## final steps afer all steps have completed WIP
+## final steps afer all steps have completed for all tiles
+
+Copy vanish_neowise_nnnn.csv via http://svocats.cab.inta-csic.es/vanish-neowise/index.php?action=search to data/vasco-svo/ folder. This is the list of vanishing objects seen in NEOWISE but not in the optical / infrared (171753 rows)
+
+commands listed below are collected in a shell script: `run_vasco_neowise_compare.sh` which can utilize the following envs:
+
+```bash
+DATA_DIR=/path/to/data \
+TILES_ROOT=/path/to/data/tiles \
+VASCO_CSV=/path/to/data/vasco-svo/vanish_neowise_1765546031.csv \
+OPTICAL_MASTER=/path/to/data/vasco-svo/_master_tile_catalog_pass2.csv \
+OUT_DIR=/path/to/out
+```
+Individual commands:
 ```bash
 python ./scripts/filter_unmatched_all.py --data-dir data --backend cds --tol-local 3.0
 
@@ -275,6 +288,7 @@ python ./scripts/merge_tile_catalogs.py --tiles-root ./data/tiles --tolerance-ar
 
 python ./scripts/compare_vasco_vs_optical.py --vasco data/vasco-svo/vanish_neowise_1765546031.csv --optical-master data/vasco-svo/_master_tile_catalog_pass2.csv --out-dir data
 ```
+If everything went ok, you should find vasco_matched_to_optical.csv and vasco_still_ir_only.csv in the data folder.   
 
 ## Command Reference
 
