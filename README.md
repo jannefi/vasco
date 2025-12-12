@@ -1,6 +1,10 @@
 
 # VASCO (v0.07.1) — PSF‑aware pipeline re‑production of MNRAS 515(1):1380
 
+<p align="center">
+  <img src="./first-light/plots/first_light_banner.png" alt="VASCO — first‑light (pilot) banner" />
+</p>
+
 **important note on Vizier CDS time-outs**
 Before running, execute: `source scripts/.env.cds-fast.sh` for good env values
 if Vizier CDS is busy and starts to time-out etc. try with these:
