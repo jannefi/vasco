@@ -385,6 +385,8 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0, cds_ga
     if cds_gaia_table:
         out_gaia = xdir / 'sex_gaia_xmatch_cdss.csv'
         try:
+            if os.getenv("VASCO_CDS_PRECALL_SLEEP", "0") in ("1","true","True"):
+                time.sleep(10.0)
             _cds_log(xdir, f"[STEP4][CDS] Start — radius={radius_arcsec} arcsec; GAIA={cds_gaia_table!r}; PS1={cds_ps1_table!r}")
             _cds_log(xdir, f"[STEP4][CDS] Using SExtractor CSV: {sex_csv.name} (RA={ra_col}, DEC={dec_col})")
             _cds_log(xdir, f"[STEP4][CDS] Query Gaia table {cds_gaia_table} -> {out_gaia.name}")
@@ -392,7 +394,6 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0, cds_ga
             _validate_within5_arcsec_unit_tolerant(out_gaia)
             rows = _csv_row_count(out_gaia)
             _cds_log(xdir, f"[STEP4][CDS] Gaia OK — rows={rows}")
-            time.sleep(10.0)
         except Exception as e:
             _cds_log(xdir, f"[STEP4][CDS][WARN] Gaia xmatch failed: {e}")
     else:
@@ -409,6 +410,8 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0, cds_ga
             return
         out_ps1 = xdir / 'sex_ps1_xmatch_cdss.csv'
         try:
+            if os.getenv("VASCO_CDS_PRECALL_SLEEP", "0") in ("1","true","True"):
+                time.sleep(10.0)
             _cds_log(xdir, f"[STEP4][CDS] Query PS1 table {cds_ps1_table} -> {out_ps1.name}")
             cdsskymatch(sex_csv, out_ps1, ra=ra_col, dec=dec_col, cdstable=cds_ps1_table, radius_arcsec=radius_arcsec, find='best', ofmt='csv', omode='out', blocksize=1000,)
             _validate_within5_arcsec_unit_tolerant(out_ps1)

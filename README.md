@@ -1,6 +1,21 @@
 
 # VASCO (v0.07.1) — PSF‑aware pipeline re‑production of MNRAS 515(1):1380
 
+**important note on Vizier CDS time-outs**
+Before running, execute: `source scripts/.env.cds-fast.sh` for good env values
+if Vizier CDS is busy and starts to time-out etc. try with these:
+
+```bash
+export VASCO_CDS_MODE=chunked
+export VASCO_CDS_CHUNK_ROWS=500   # or 300 if still noisy
+export VASCO_CDS_BLOCKSIZE=omit   # or =500 to align with chunks
+export VASCO_CDS_MAX_RETRIES=2
+export VASCO_CDS_BASE_BACKOFF=2.0
+export VASCO_CDS_INTER_CHUNK_DELAY=1.0
+export VASCO_CDS_JITTER=1.0
+export VASCO_CDS_PRECALL_SLEEP=1
+```
+
 This repository re‑implements the core data‑processing workflow described in 
 **“Vanishing & Appearing Sources during a Century of Observations”** (MNRAS 515(1):1380, 2022).
 Paper: https://academic.oup.com/mnras/article/515/1/1380/6607509
