@@ -265,7 +265,12 @@ See `LICENSE` (if present). PRs/issues are welcome for reliability, data provena
 
 ---
 
+## final steps afer all steps have completed
 
+python ./scripts/filter_unmatched_all.py --data-dir data --backend cds --tol-local 3.0
+python ./scripts/summarize_runs.py --data-dir data
+python ./scripts/merge_tile_catalogs.py --tiles-root ./data/tiles --tolerance-arcsec 0.5
+python ./scripts/compare_vasco_vs_optical.py --vasco data/vasco-svo/vanish_neowise_1765546031.csv --optical-master data/vasco-svo/_master_tile_catalog_pass2.csv --out-dir data
 ---
 
 ## Command Reference
