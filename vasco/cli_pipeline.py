@@ -353,7 +353,7 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0, cds_ga
             _validate_within5_arcsec_unit_tolerant(out_gaia)
             rows = _csv_row_count(out_gaia)
             _cds_log(xdir, f"[STEP4][CDS] Gaia OK — rows={rows}")
-            time.sleep(10.0)
+            time.sleep(3.0)
         except Exception as e:
             _cds_log(xdir, f"[STEP4][CDS][WARN] Gaia xmatch failed: {e}")
     else:
