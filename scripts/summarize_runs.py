@@ -179,9 +179,20 @@ def main():
         print('Wrote', md_path)
         print('Wrote', csv_path)
         return 0
-    runs_root = Path(args.data_dir) / 'runs'
-    runs = sorted(glob.glob(str(runs_root / 'run-*')))
-    rows = [summarize_run(run) for run in runs]
+    
+    data = Path(args.data_dir)
+    tiles_root = data / 'tiles'
+    rows = []
+    if tiles_root.exists():
+        # Synthesize a single "run" from flattened tiles
+        # (or group by some naming scheme if you have one)
+        fake_run = str(data / 'FLATTENED')
+        rows.append(summarize_run(fake_run))  # you may adapt summarize_run to accept data/tiles
+    else:
+        runs_root = data / 'runs'
+        runs = sorted(glob.glob(str(runs_root / 'run-*')))
+        rows = [summarize_run(run) for run in runs]
+
     md_path = write_cross_run_md(args.data_dir, rows)
     csv_path = write_cross_run_csv(args.data_dir, rows)
     print('Wrote', md_path)
