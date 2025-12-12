@@ -16,7 +16,8 @@ def cdsskymatch(in_table, out_table, *, ra, dec, cdstable,
                 radius_arcsec: float = 5.0,
                 find: str = 'best',
                 ofmt: str = 'csv',
-                omode: str = 'out'):
+                omode: str = 'out',
+                blocksize: int | None = 1000):
     _ensure_tool('stilts')
     cmd = [
         'stilts', 'cdsskymatch',
@@ -29,5 +30,9 @@ def cdsskymatch(in_table, out_table, *, ra, dec, cdstable,
         f'out={str(out_table)}',
         f'ofmt={ofmt}',
     ]
+
+    if blocksize:
+        cmd.append(f'blocksize={blocksize}')
+
     subprocess.run(cmd, check=True)
 

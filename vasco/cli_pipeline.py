@@ -410,7 +410,7 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0, cds_ga
         out_ps1 = xdir / 'sex_ps1_xmatch_cdss.csv'
         try:
             _cds_log(xdir, f"[STEP4][CDS] Query PS1 table {cds_ps1_table} -> {out_ps1.name}")
-            cdsskymatch(sex_csv, out_ps1, ra=ra_col, dec=dec_col, cdstable=cds_ps1_table, radius_arcsec=radius_arcsec, find='best', ofmt='csv', omode='out')
+            cdsskymatch(sex_csv, out_ps1, ra=ra_col, dec=dec_col, cdstable=cds_ps1_table, radius_arcsec=radius_arcsec, find='best', ofmt='csv', omode='out', blocksize=1000,)
             _validate_within5_arcsec_unit_tolerant(out_ps1)
             rows = _csv_row_count(out_ps1)
             _cds_log(xdir, f"[STEP4][CDS] PS1 OK — rows={rows}")
