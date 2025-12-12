@@ -1,8 +1,10 @@
 # VASCO v0.07.1 — PSF-aware 2-pass pipeline
 
 
-Current randomized run test (11-Dec-2025):
-- 11/11: split the work into 6 different steps. See [Random run info](README-RUN-RANDOM.md)
+Current randomized run test (12-Dec-2025):
+- 12/12 implement a fix: when using the CDS backend in Step 4, the pipeline will skip PS1 x-match for tiles whose Dec < −30° (outside Pan-STARRS1 3π coverage). The skip is
+recorded in `xmatch/STEP4_CDS.log within the tile folder. Shorter pause between CDS calls.
+- 11/12: split the work into 6 different steps. See [Random run info](README-RUN-RANDOM.md)
   - This is still WIP. Testing, fixing and adding new features when time permits
 - Itroduced a working Docker image. You don't need to install anything except Docker. See [this document](/DOCKER_READ.md)
   - docker image contains psfex, sextractor, stilts and all required python modules.
