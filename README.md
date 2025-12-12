@@ -232,6 +232,24 @@ python run-random.py steps   --steps step4-xmatch,step5-filter-within5,step6-sum
 
 See `LICENSE` (if present). PRs/issues are welcome for reliability, data provenance, and reproducibility improvements.
 
+## Coverage estimates with 30′×30′ tiles (POSS‑I ~ Dec ≥ −30°)
+
+**Assumptions**
+- Full sky area: ~41,253 deg²
+- POSS‑I/PS1‑like coverage (Dec ≥ −30°): fraction = (1 − sin(−30°)) / 2 = **0.75** → area ≈ **30,940 deg²**
+- Tile size: **30′×30′** ⇒ **0.5°×0.5°** ⇒ area **0.25 deg²** per tile
+
+**Estimated tile counts**
+- **Full POSS‑I coverage (≈ 75% of sky)**: ~**123,759 tiles**
+- **Statistical subsample 50%**: ~**61,879 tiles**
+- **Statistical subsample 20%**: ~**24,752 tiles**
+- **Statistical subsample 10%**: ~**12,376 tiles**
+
+> Rule‑of‑thumb: with POSSI‑E enforcement and occasional STScI gaps, budget a **5–10% overhead** in attempted downloads.
+> Example: for a 20% subsample (~24,752 tiles), attempt **~25,989–27,227 downloads**.
+
+---
+
 
 ---
 
