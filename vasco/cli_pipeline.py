@@ -388,7 +388,7 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0, cds_ga
             _cds_log(xdir, f"[STEP4][CDS] Start — radius={radius_arcsec} arcsec; GAIA={cds_gaia_table!r}; PS1={cds_ps1_table!r}")
             _cds_log(xdir, f"[STEP4][CDS] Using SExtractor CSV: {sex_csv.name} (RA={ra_col}, DEC={dec_col})")
             _cds_log(xdir, f"[STEP4][CDS] Query Gaia table {cds_gaia_table} -> {out_gaia.name}")
-            cdsskymatch(sex_csv, out_gaia, ra=ra_col, dec=dec_col, cdstable=cds_gaia_table, radius_arcsec=radius_arcsec, find='best', ofmt='csv', omode='out')
+            cdsskymatch(sex_csv, out_gaia, ra=ra_col, dec=dec_col, cdstable=cds_gaia_table, radius_arcsec=radius_arcsec, find='best', ofmt='csv', omode='out', blocksize=1000)
             _validate_within5_arcsec_unit_tolerant(out_gaia)
             rows = _csv_row_count(out_gaia)
             _cds_log(xdir, f"[STEP4][CDS] Gaia OK — rows={rows}")
