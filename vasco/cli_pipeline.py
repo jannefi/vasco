@@ -2,15 +2,15 @@
 from __future__ import annotations
 import argparse, json, time, subprocess, os, shutil
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import List, Tuple
 from . import downloader as dl
 from .exporter3 import export_and_summarize
 from .utils.coords import parse_ra as _parse_ra, parse_dec as _parse_dec
-from .pipeline_split import run_pass1, run_psfex, run_pass2, ToolMissingError
+from .pipeline_split import run_pass1, run_psfex, run_pass2
 from vasco.external_fetch_online import (fetch_gaia_neighbourhood, fetch_ps1_neighbourhood)
 from vasco.external_fetch_usnob_vizier import fetch_usnob_neighbourhood
 from vasco.mnras.xmatch_stilts import (xmatch_sextractor_with_gaia, xmatch_sextractor_with_ps1)
-from vasco.utils.cdsskymatch import cdsskymatch, StiltsNotFound
+from vasco.utils.cdsskymatch import cdsskymatch
 
 # --- helpers ---
 
@@ -26,11 +26,9 @@ def _validate_within5_arcsec_unit_tolerant(xmatch_csv: Path) -> Path:
     with open(xmatch_csv, newline='') as f:
         header = next(csv.reader(f), [])
     cols = set(header)
-
     def _write_empty():
         subprocess.run(['stilts', 'tpipe', f'in={str(xmatch_csv)}', 'cmd=select false', f'out={str(out)}', 'ofmt=csv'], check=True)
         return out
-
     if 'angDist' in cols:
         p = subprocess.run(['stilts','tpipe', f'in={str(xmatch_csv)}', 'cmd=select angDist<=5', 'omode=count'], capture_output=True, text=True)
         try:
@@ -43,7 +41,6 @@ def _validate_within5_arcsec_unit_tolerant(xmatch_csv: Path) -> Path:
             return out
         subprocess.run(['stilts','tpipe', f'in={str(xmatch_csv)}', 'cmd=select 3600*angDist<=5', f'out={str(out)}', 'ofmt=csv'], check=True)
         return out
-
     for a,b in [('ra','dec'), ('RAJ2000','DEJ2000'), ('RA_ICRS','DE_ICRS'), ('RA','DEC')]:
         if a in cols and b in cols:
             cmd = ("cmd=addcol angDist_arcsec "
@@ -67,107 +64,61 @@ def _write_json(path: Path, obj) -> None:
 def _read_json(path: Path):
     return json.loads(Path(path).read_text(encoding='utf-8'))
 
-def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
-    tile_dir = Path(tile_dir)
-    pass2_ldac = Path(pass2_ldac)
-    cat_dir = tile_dir / 'catalogs'
-    cat_dir.mkdir(parents=True, exist_ok=True)
-    sex_csv = cat_dir / 'sextractor_pass2.csv'
-    if sex_csv.exists():
-        return sex_csv
+# --- POSSI-E enforcement & header export ---
+
+def _fits_survey(path: Path) -> str:
+    from astropy.io import fits
     try:
-        from astropy.io import fits
-        import csv as pycsv
-        with fits.open(pass2_ldac, memmap=False) as hdul:
-            hdu = next((h for h in hdul if getattr(h, 'name', '') == 'LDAC_OBJECTS'), None)
-            if hdu is None:
-                hdu = next((h for h in hdul if getattr(h, 'columns', None)), None)
-            if hdu is None:
-                raise RuntimeError('No table HDU with columns found in LDAC')
-            names = [c.name for c in hdu.columns]
-            rows = hdu.data
-            with sex_csv.open('w', newline='') as f:
-                w = pycsv.writer(f)
-                w.writerow(names)
-                for r in rows:
-                    w.writerow([r[n] for n in names])
-            return sex_csv
+        with fits.open(path, memmap=False) as hdul:
+            hdr = hdul[0].header if hdul and hdul[0].header else {}
+            return str(hdr.get('SURVEY','')).strip()
     except Exception:
-        pass
-    subprocess.run(['stilts','tcopy', f'in={str(pass2_ldac)}+2', f'out={str(sex_csv)}', 'ofmt=csv'], check=True)
-    return sex_csv
+        return ''
 
-def _csv_has_radec(csv_path: Path) -> bool:
-    import csv
+def _write_fits_header_json(fits_path: Path) -> Path:
+    """Write a JSON sidecar with selected keys and full header dump next to FITS."""
+    from astropy.io import fits
+    import json as _json
+    fits_path = Path(fits_path)
+    sidecar = fits_path.with_suffix(fits_path.suffix + '.header.json')
     try:
-        with open(csv_path, newline='') as f:
-            hdr = next(csv.reader(f))
-            cols = {h.strip() for h in hdr}
-        for a,b in [('ra','dec'), ('RA_ICRS','DE_ICRS'), ('RAJ2000','DEJ2000'), ('RA','DEC'), ('lon','lat'), ('raMean','decMean'), ('RAMean','DecMean'), ('ALPHA_J2000','DELTA_J2000')]:
-            if a in cols and b in cols:
-                return True
-        return False
+        with fits.open(fits_path, memmap=False) as hdul:
+            hdr = hdul[0].header if hdul and hdul[0].header else {}
+            sel_keys = ['SURVEY','PLATEID','PLATE-ID','PLATE','DATE-OBS','RA','DEC','EQUINOX','MJD-OBS','NAXIS1','NAXIS2','CD1_1','CD1_2','CD2_1','CD2_2','CDELT1','CDELT2','CRPIX1','CRPIX2','CRVAL1','CRVAL2']
+            selected = {k: (str(hdr.get(k)) if hdr.get(k) is not None else None) for k in sel_keys}
+            full = {str(k): (str(hdr.get(k)) if hdr.get(k) is not None else None) for k in hdr.keys()}
+            payload = {
+                'fits_file': fits_path.name,
+                'selected': selected,
+                'header': full,
+            }
+            sidecar.write_text(_json.dumps(payload, indent=2), encoding='utf-8')
     except Exception:
-        return False
+        sidecar.write_text(json.dumps({'fits_file': fits_path.name, 'error': 'header_read_failed'}), encoding='utf-8')
+    return sidecar
 
-def _detect_radec_columns(csv_path: Path) -> Tuple[str, str] | None:
-    import csv
-    try:
-        with open(csv_path, newline='') as f:
-            hdr = next(csv.reader(f))
-            cols = [h.strip() for h in hdr]
-        pairs = [('ALPHA_J2000','DELTA_J2000'), ('RAJ2000','DEJ2000'), ('RA_ICRS','DE_ICRS'), ('ra','dec'), ('RA','DEC'), ('lon','lat'), ('raMean','decMean'), ('RAMean','DecMean')]
-        for a,b in pairs:
-            if a in cols and b in cols:
-                return a,b
-        return None
-    except Exception:
-        return None
-
-# --- visibility helpers for CDS ---
-
-def _csv_row_count(path: Path) -> int:
-    import csv
-    try:
-        with open(path, newline='') as f:
-            r = csv.reader(f)
-            next(r, None)
-            return sum(1 for _ in r)
-    except Exception:
-        return -1
-
-def _cds_log(xdir: Path, msg: str) -> None:
-    xdir = Path(xdir)
-    log = xdir / 'STEP4_CDS.log'
-    with log.open('a', encoding='utf-8') as f:
-        f.write(msg.rstrip('') + "")
-    print(msg.rstrip(''))
-
-# ---- NEW: helpers to derive tile center for coverage checks ----
-
-def _coords_from_tile_dirname(name: str) -> tuple[float, float] | None:
-    """Parse 'tile-RA<ra>-DEC<dec>' -> (ra, dec) if possible."""
-    try:
-        if not name.startswith('tile-RA') or '-DEC' not in name:
-            return None
-        ra_part = name[len('tile-RA'): name.index('-DEC')]
-        dec_part = name[name.index('-DEC') + len('-DEC') :]
-        return float(ra_part), float(dec_part)
-    except Exception:
-        return None
-
-def _tile_center_from_index_or_name(run_dir: Path) -> tuple[float, float] | None:
-    # Try RUN_INDEX.json first
-    try:
-        recs = _read_json(Path(run_dir) / 'RUN_INDEX.json')
-        if recs:
-            stem = Path(recs[0].get('tile','')).name
-            parts = stem.split('_')
-            return float(parts[1]), float(parts[2])
-    except Exception:
-        pass
-    # Fallback: parse from directory name
-    return _coords_from_tile_dirname(Path(run_dir).name)
+def _enforce_possi_e_or_skip(fits_path: Path, logger) -> None:
+    """Check FITS SURVEY and skip (delete + raise) if not POSSI-E; else write header sidecar."""
+    survey = _fits_survey(fits_path)
+    if survey != 'POSSI-E':
+        try:
+            msg = f"[STEP1][FILTER] Non-POSS plate; SURVEY={survey!r} — file will be discarded"
+            if logger:
+                logger.info(msg)
+            else:
+                print(msg)
+        finally:
+            try:
+                Path(fits_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+        raise RuntimeError(f"Non-POSS plate returned by STScI: SURVEY={survey!r}")
+    else:
+        sidecar = _write_fits_header_json(Path(fits_path))
+        if logger:
+            logger.info(f"[STEP1][HEADER] Wrote FITS header sidecar: {sidecar.name}")
+        else:
+            print(f"[STEP1][HEADER] Wrote FITS header sidecar: {sidecar.name}")
 
 # --- commands ---
 
@@ -195,10 +146,11 @@ def cmd_one(args: argparse.Namespace) -> int:
     ra = _to_float_ra(args.ra); dec = _to_float_dec(args.dec)
     try:
         fits = dl.fetch_skyview_dss(ra, dec, size_arcmin=args.size_arcmin, survey=args.survey, pixel_scale_arcsec=args.pixel_scale_arcsec, out_dir=out_raw, logger=lg)
+        _enforce_possi_e_or_skip(Path(fits), lg)
     except RuntimeError as e:
         if 'Non-POSS plate returned by STScI' in str(e):
             print('[SKIP]', f'RA={ra:.6f}', f'Dec={dec:.6f}', '-> non-POSS; tile omitted.')
-            counts = {'planned': 1, 'downloaded': 0, 'processed': 0}
+            counts = {'planned': 1, 'downloaded': 0, 'processed': 0, 'filtered_non_poss': 1}
             missing = [{'ra': float(ra), 'dec': float(dec), 'expected_stem': _expected_stem(ra, dec, args.survey, args.size_arcmin)}]
             _write_json(run_dir / 'RUN_COUNTS.json', counts)
             _write_json(run_dir / 'RUN_MISSING.json', missing)
@@ -245,9 +197,8 @@ def cmd_one(args: argparse.Namespace) -> int:
             print('[POST][WARN] CDS xmatch failed for', run_dir.name, ':', e)
     else:
         print('[POST][WARN]', run_dir.name, 'Unknown xmatch backend:', backend)
-
     results = [{'tile': Path(fits).stem, 'pass1': str(p1), 'psf': str(psf), 'pass2': str(p2)}]
-    counts = {'planned': 1, 'downloaded': 1, 'processed': 1}
+    counts = {'planned': 1, 'downloaded': 1, 'processed': 1, 'filtered_non_poss': 0}
     _write_json(run_dir / 'RUN_INDEX.json', results)
     _write_json(run_dir / 'RUN_COUNTS.json', counts)
     _write_json(run_dir / 'RUN_MISSING.json', [])
@@ -262,10 +213,11 @@ def cmd_step1_download(args: argparse.Namespace) -> int:
     ra = _to_float_ra(args.ra); dec = _to_float_dec(args.dec)
     try:
         fits = dl.fetch_skyview_dss(ra, dec, size_arcmin=args.size_arcmin, survey=args.survey, pixel_scale_arcsec=args.pixel_scale_arcsec, out_dir=out_raw, logger=lg)
+        _enforce_possi_e_or_skip(Path(fits), lg)
     except RuntimeError as e:
         if 'Non-POSS plate returned by STScI' in str(e):
             print('[SKIP]', f'RA={ra:.6f}', f'Dec={dec:.6f}', '-> non-POSS; tile omitted.')
-            counts = {'planned': 1, 'downloaded': 0, 'processed': 0}
+            counts = {'planned': 1, 'downloaded': 0, 'processed': 0, 'filtered_non_poss': 1}
             missing = [{'ra': float(ra), 'dec': float(dec), 'expected_stem': _expected_stem(ra, dec, args.survey, args.size_arcmin)}]
             _write_json(run_dir / 'RUN_COUNTS.json', counts)
             _write_json(run_dir / 'RUN_MISSING.json', missing)
@@ -274,13 +226,43 @@ def cmd_step1_download(args: argparse.Namespace) -> int:
             return 0
         else:
             raise
-    counts = {'planned': 1, 'downloaded': 1, 'processed': 0}
+    counts = {'planned': 1, 'downloaded': 1, 'processed': 0, 'filtered_non_poss': 0}
     _write_json(run_dir / 'RUN_COUNTS.json', counts)
     _write_json(run_dir / 'RUN_INDEX.json', [{'tile': Path(fits).stem}])
     _write_json(run_dir / 'RUN_MISSING.json', [])
     _write_overview(run_dir, counts, [{'tile': Path(fits).stem}], [])
     print('[STEP1] Downloaded FITS ->', fits)
     return 0
+
+# --- overview writer with extra summary count ---
+
+def _write_overview(run_dir: Path, counts: dict, results: list, missing: list[dict] | None = None) -> None:
+    lines = ['# Run Overview','',
+             f"**Planned**: {counts.get('planned', 0)}",
+             f"**Downloaded**: {counts.get('downloaded', 0)}",
+             f"**Processed**: {counts.get('processed', 0)}",
+             f"**Non-POSS filtered**: {counts.get('filtered_non_poss', 0)}",
+             '']
+    if results:
+        lines.append('## Tiles (first 10)')
+        for rec in results[:10]:
+            t = rec.get('tile','?')
+            p2 = Path(rec.get('pass2','pass2.ldac')).name
+            lines.append(f"- `{t}` → `{p2}`")
+        if len(results) > 10:
+            lines.append(f"… and {len(results)-10} more tiles.")
+        lines.append('')
+    if missing:
+        lines.append('## Missing tiles (planned but not processed) — first 15')
+        for rec in missing[:15]:
+            ra = rec.get('ra'); dec = rec.get('dec'); stem = rec.get('expected_stem')
+            lines.append(f"- RA={ra:.6f} Dec={dec:.6f} → expected `{stem}`")
+        if len(missing) > 15:
+            lines.append(f"… and {len(missing)-15} more missing tiles.")
+        lines.append('')
+    _write_text(run_dir / 'RUN_OVERVIEW.md', ''.join(lines))
+
+# --- step2, step3, post-xmatch, cds-xmatch, step4, step5, step6 ---
 
 def cmd_step2_pass1(args: argparse.Namespace) -> int:
     run_dir = _build_run_dir(Path(args.workdir) if args.workdir else None)
@@ -335,6 +317,63 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> No
     except FileNotFoundError:
         print('[POST][WARN]', tile_dir.name, 'STILTS not found; USNOB skipped')
 
+def _csv_has_radec(csv_path: Path) -> bool:
+    import csv
+    try:
+        with open(csv_path, newline='') as f:
+            hdr = next(csv.reader(f))
+            cols = {h.strip() for h in hdr}
+        for a,b in [('ra','dec'), ('RA_ICRS','DE_ICRS'), ('RAJ2000','DEJ2000'), ('RA','DEC'), ('lon','lat'), ('raMean','decMean'), ('RAMean','DecMean'), ('ALPHA_J2000','DELTA_J2000')]:
+            if a in cols and b in cols:
+                return True
+        return False
+    except Exception:
+        return False
+
+def _detect_radec_columns(csv_path: Path) -> Tuple[str, str] | None:
+    import csv
+    try:
+        with open(csv_path, newline='') as f:
+            hdr = next(csv.reader(f))
+            cols = [h.strip() for h in hdr]
+        pairs = [('ALPHA_J2000','DELTA_J2000'), ('RAJ2000','DEJ2000'), ('RA_ICRS','DE_ICRS'), ('ra','dec'), ('RA','DEC'), ('lon','lat'), ('raMean','decMean'), ('RAMean','DecMean')]
+        for a,b in pairs:
+            if a in cols and b in cols:
+                return a,b
+        return None
+    except Exception:
+        return None
+
+def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
+    tile_dir = Path(tile_dir)
+    pass2_ldac = Path(pass2_ldac)
+    cat_dir = tile_dir / 'catalogs'
+    cat_dir.mkdir(parents=True, exist_ok=True)
+    sex_csv = cat_dir / 'sextractor_pass2.csv'
+    if sex_csv.exists():
+        return sex_csv
+    try:
+        from astropy.io import fits
+        import csv as pycsv
+        with fits.open(pass2_ldac, memmap=False) as hdul:
+            hdu = next((h for h in hdul if getattr(h, 'name', '') == 'LDAC_OBJECTS'), None)
+            if hdu is None:
+                hdu = next((h for h in hdul if getattr(h, 'columns', None)), None)
+            if hdu is None:
+                raise RuntimeError('No table HDU with columns found in LDAC')
+            names = [c.name for c in hdu.columns]
+            rows = hdu.data
+            with sex_csv.open('w', newline='') as f:
+                w = pycsv.writer(f)
+                w.writerow(names)
+                for r in rows:
+                    w.writerow([r[n] for n in names])
+            return sex_csv
+    except Exception:
+        pass
+    subprocess.run(['stilts','tcopy', f'in={str(pass2_ldac)}+2', f'out={str(sex_csv)}', 'ofmt=csv'], check=True)
+    return sex_csv
+
 def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0, cds_gaia_table: str | None = None, cds_ps1_table: str | None = None) -> None:
     tile_dir = Path(tile_dir)
     xdir = tile_dir / 'xmatch'; xdir.mkdir(parents=True, exist_ok=True)
@@ -353,15 +392,14 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0, cds_ga
             _validate_within5_arcsec_unit_tolerant(out_gaia)
             rows = _csv_row_count(out_gaia)
             _cds_log(xdir, f"[STEP4][CDS] Gaia OK — rows={rows}")
-            time.sleep(3.0)
+            time.sleep(10.0)
         except Exception as e:
             _cds_log(xdir, f"[STEP4][CDS][WARN] Gaia xmatch failed: {e}")
     else:
         _cds_log(xdir, "[STEP4][CDS] Gaia table not provided — skipping")
 
-    # PS1 — implement Fix A: skip automatically south of -30 deg
+    # PS1 coverage guard (Fix A) — skip south of -30 deg
     if cds_ps1_table:
-        # Honor optional env disable for consistency with local path
         if os.getenv('VASCO_DISABLE_PS1'):
             _cds_log(xdir, "[STEP4][CDS] PS1 disabled by env — skipping")
             return
@@ -381,6 +419,75 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0, cds_ga
     else:
         _cds_log(xdir, "[STEP4][CDS] PS1 table not provided — skipping")
 
+# --- CDS logging & helpers ---
+
+def _csv_row_count(path: Path) -> int:
+    import csv
+    try:
+        with open(path, newline='') as f:
+            r = csv.reader(f)
+            next(r, None)
+            return sum(1 for _ in r)
+    except Exception:
+        return -1
+
+def _cds_log(xdir: Path, msg: str) -> None:
+    xdir = Path(xdir)
+    log = xdir / 'STEP4_CDS.log'
+    with log.open('a', encoding='utf-8') as f:
+        f.write(msg.rstrip('') + "")
+    print(msg.rstrip(''))
+
+def _coords_from_tile_dirname(name: str) -> tuple[float, float] | None:
+    try:
+        if not name.startswith('tile-RA') or '-DEC' not in name:
+            return None
+        ra_part = name[len('tile-RA'): name.index('-DEC')]
+        dec_part = name[name.index('-DEC') + len('-DEC') :]
+        return float(ra_part), float(dec_part)
+    except Exception:
+        return None
+
+def _tile_center_from_index_or_name(run_dir: Path) -> tuple[float, float] | None:
+    try:
+        recs = _read_json(Path(run_dir) / 'RUN_INDEX.json')
+        if recs:
+            stem = Path(recs[0].get('tile','')).name
+            parts = stem.split('_')
+            return float(parts[1]), float(parts[2])
+    except Exception:
+        pass
+    return _coords_from_tile_dirname(Path(run_dir).name)
+
+# --- CLI ---
+
+def _write_overview(run_dir: Path, counts: dict, results: list, missing: list[dict] | None = None) -> None:
+    lines = ['# Run Overview','',
+             f"**Planned**: {counts.get('planned', 0)}",
+             f"**Downloaded**: {counts.get('downloaded', 0)}",
+             f"**Processed**: {counts.get('processed', 0)}",
+             f"**Non-POSS filtered**: {counts.get('filtered_non_poss', 0)}",
+             '']
+    if results:
+        lines.append('## Tiles (first 10)')
+        for rec in results[:10]:
+            t = rec.get('tile','?')
+            p2 = Path(rec.get('pass2','pass2.ldac')).name
+            lines.append(f"- `{t}` → `{p2}`")
+        if len(results) > 10:
+            lines.append(f"… and {len(results)-10} more tiles.")
+        lines.append('')
+    if missing:
+        lines.append('## Missing tiles (planned but not processed) — first 15')
+        for rec in missing[:15]:
+            ra = rec.get('ra'); dec = rec.get('dec'); stem = rec.get('expected_stem')
+            lines.append(f"- RA={ra:.6f} Dec={dec:.6f} → expected `{stem}`")
+        if len(missing) > 15:
+            lines.append(f"… and {len(missing)-15} more missing tiles.")
+        lines.append('')
+    _write_text(run_dir / 'RUN_OVERVIEW.md', ''.join(lines))
+
+# subcommands
 
 def cmd_step4_xmatch(args: argparse.Namespace) -> int:
     run_dir = _build_run_dir(Path(args.workdir) if args.workdir else None)
@@ -451,32 +558,13 @@ def cmd_step6_summarize(args: argparse.Namespace) -> int:
     print('[STEP6] Summary + exports written.')
     return 0
 
-def _write_overview(run_dir: Path, counts: dict, results: list, missing: list[dict] | None = None) -> None:
-    lines = ['# Run Overview','', f"**Planned**: {counts.get('planned', 0)}", f"**Downloaded**: {counts.get('downloaded', 0)}", f"**Processed**: {counts.get('processed', 0)}", '']
-    if results:
-        lines.append('## Tiles (first 10)')
-        for rec in results[:10]:
-            t = rec.get('tile','?')
-            p2 = Path(rec.get('pass2','pass2.ldac')).name
-            lines.append(f"- `{t}` → `{p2}`")
-        if len(results) > 10:
-            lines.append(f"… and {len(results)-10} more tiles.")
-        lines.append('')
-    if missing:
-        lines.append('## Missing tiles (planned but not processed) — first 15')
-        for rec in missing[:15]:
-            ra = rec.get('ra'); dec = rec.get('dec'); stem = rec.get('expected_stem')
-            lines.append(f"- RA={ra:.6f} Dec={dec:.6f} → expected `{stem}`")
-        if len(missing) > 15:
-            lines.append(f"… and {len(missing)-15} more missing tiles.")
-        lines.append('')
-    _write_text(run_dir / 'RUN_OVERVIEW.md', ''.join(lines) + '')
+# argparse + main
 
 def main(argv: List[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog='vasco.cli_pipeline', description='VASCO pipeline orchestrator (true split)')
+    p = argparse.ArgumentParser(prog='vasco.cli_pipeline', description='VASCO pipeline orchestrator (split workflow + POSSI-E guard)')
     sub = p.add_subparsers(dest='cmd')
 
-    one = sub.add_parser('one2pass', help='One RA/Dec -> split 1+2+3 + xmatch + summarize')
+    one = sub.add_parser('one2pass', help='One RA/Dec -> 1+2+3 + xmatch + summarize')
     one.add_argument('--ra', type=str, required=True)
     one.add_argument('--dec', type=str, required=True)
     one.add_argument('--size-arcmin', type=float, default=30.0)
@@ -491,7 +579,7 @@ def main(argv: List[str] | None = None) -> int:
     one.add_argument('--cds-ps1-table', default=os.getenv('VASCO_CDS_PS1_TABLE'))
     one.set_defaults(func=cmd_one)
 
-    s1 = sub.add_parser('step1-download', help='Download tile FITS to raw/')
+    s1 = sub.add_parser('step1-download', help='Download tile FITS to raw/ (POSSI-E enforced; header sidecar)')
     s1.add_argument('--ra', type=str, required=True)
     s1.add_argument('--dec', type=str, required=True)
     s1.add_argument('--size-arcmin', type=float, default=30.0)
@@ -508,7 +596,7 @@ def main(argv: List[str] | None = None) -> int:
     s3.add_argument('--workdir', required=True)
     s3.set_defaults(func=cmd_step3_psf_and_pass2)
 
-    s4 = sub.add_parser('step4-xmatch', help='Cross-match (local/CDS)')
+    s4 = sub.add_parser('step4-xmatch', help='Cross-match (local/CDS; PS1 coverage guard)')
     s4.add_argument('--workdir', required=True)
     s4.add_argument('--xmatch-backend', choices=['local','cds'], default='local')
     s4.add_argument('--xmatch-radius-arcsec', type=float, default=5.0)
@@ -517,7 +605,7 @@ def main(argv: List[str] | None = None) -> int:
     s4.add_argument('--cds-ps1-table', default=os.getenv('VASCO_CDS_PS1_TABLE'))
     s4.set_defaults(func=cmd_step4_xmatch)
 
-    s5 = sub.add_parser('step5-filter-within5', help='Filter xmatch to <=5 arcsec')
+    s5 = sub.add_parser('step5-filter-within5', help='Filter xmatch to <= 5 arcsec')
     s5.add_argument('--workdir', required=True)
     s5.set_defaults(func=cmd_step5_filter_within5)
 
