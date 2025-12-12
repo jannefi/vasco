@@ -12,7 +12,7 @@ recorded in `xmatch/STEP4_CDS.log within the tile folder. Shorter pause between 
 - Start using Stilts CDSSkymatch
   - export VASCO_CDS_GAIA_TABLE="I/350/gaiaedr3"
   - export VASCO_CDS_PS1_TABLE="II/389/ps1_dr2"
-- python run_random.py download_loop   --sleep-sec 15 --size-arcmin 30 --survey dss1-red   --pixel-scale 1.7
+- python run-random.py download_loop   --sleep-sec 15 --size-arcmin 30 --survey dss1-red   --pixel-scale 1.7
 - python ./scripts/filter_unmatched_all.py (final matching steps - WIP)
 - python ./scripts/summarize_runs.py --data-dir ./data - produces markdown and csv report of all runs (WIP)
 
