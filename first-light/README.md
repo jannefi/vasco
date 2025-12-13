@@ -9,8 +9,9 @@ This folder captures a minimal, end‑to‑end **first‑light** result: matchin
 - VASCO (NEOWISE-only) rows: **171,753**
 - Optical detections in pilot tiles: **190,969**
 - Match radius: **2.0″**
-- **Matched** NEOWISE→optical: **309**
-- **Still IR-only** within pilot footprint: **171,444**
+- **Matched** NEOWISE→optical: **310**
+- **Still IR-only** within pilot footprint: **171,443**
+
 
 These numbers come from `match_summary.txt` in the run output.
 
