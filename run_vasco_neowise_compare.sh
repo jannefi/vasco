@@ -46,8 +46,8 @@ fi
 
 # --- Run in the requested order ---
 {
-  echo "[INFO] 1/4 filter_unmatched_all.py (backend=cds, tol-local=3.0)"
-  python ./scripts/filter_unmatched_all.py --data-dir "$DATA_DIR" --backend cds --tol-local 3.0
+  echo "[INFO] 1/4 filter_unmatched_all.py (backend=cds, tol-cdss=0.05)"
+  python ./scripts/filter_unmatched_all.py --data-dir "$DATA_DIR" --backend cds --tol-cdss 0.05
 
   echo "[INFO] 2/4 summarize_runs.py"
   python ./scripts/summarize_runs.py --data-dir "$DATA_DIR"
