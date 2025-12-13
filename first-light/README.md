@@ -4,12 +4,13 @@ This folder captures a minimal, end‑to‑end **first‑light** result: matchin
 
 > Goal: Provide visible evidence that the pipeline and comparison workflow work as intended, and that scaling to a larger sky area should reproduce the core results in the MNRAS study.
 
+
 ## Headline numbers (pilot)
-- VASCO (NEOWISE‑only) rows: **171,753**
+- VASCO (NEOWISE-only) rows: **171,753**
 - Optical detections in pilot tiles: **190,969**
 - Match radius: **2.0″**
-- **Matched** NEOWISE→optical: **69**
-- **Still IR‑only** within pilot footprint: **171,684**
+- **Matched** NEOWISE→optical: **309**
+- **Still IR-only** within pilot footprint: **171,444**
 
 These numbers come from `match_summary.txt` in the run output.
 
