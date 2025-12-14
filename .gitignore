@@ -8,7 +8,7 @@ __pycache__/
 
 # my stuff
 scripts/ensure_data_symlink.sh
-
+/data
 # Distribution / packaging
 .Python
 build/
