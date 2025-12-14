@@ -284,7 +284,7 @@ OUT_DIR=/path/to/out
 ```
 Individual commands:
 ```bash
-python ./scripts/filter_unmatched_all.py --data-dir ./data --backend cds --tol-cdss 0.05
+python ./scripts/filter_unmatched_all.py --data-dir ./data 
 
 python ./scripts/summarize_runs.py --data-dir data
 
