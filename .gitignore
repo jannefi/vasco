@@ -6,6 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
+# my stuff
+scripts/ensure_data_symlink.sh
+
 # Distribution / packaging
 .Python
 build/
