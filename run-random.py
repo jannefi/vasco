@@ -187,6 +187,33 @@ def cmd_download_from_tiles(args: argparse.Namespace) -> int:
     log.info("[DONE] Tiles planned=%d, attempted=%d, downloaded=%d", planned, attempted, downloaded)
     return 0
 
+
+# --- add near other helpers ---
+def cmd_inspect(args: argparse.Namespace) -> int:
+    """Single-shot Step 1 download at a specified RA/Dec (inspection tile)."""
+    ra = float(args.ra); dec = float(args.dec)
+    tid = tile_id_from_coords(ra, dec)
+    workdir_tile = os.path.join(args.workdir_root or WORKDIR_ROOT, tid)
+    os.makedirs(workdir_tile, exist_ok=True)
+    log.info(f"[INSPECT] RA={ra:.6f}, Dec={dec:.6f} -> {tid}")
+
+    cmd = [
+        "python","-u","-m","vasco.cli_pipeline","step1-download",
+        "--ra", str(ra),
+        "--dec", str(dec),
+        "--size-arcmin", str(args.size_arcmin or TILE_SIZE_ARCMIN),
+        "--survey", args.survey or SURVEY,
+        "--pixel-scale-arcsec", str(args.pixel_scale_arcsec or PIXEL_SCALE),
+        "--workdir", workdir_tile,
+    ]
+    rc = run_and_stream(cmd)
+    if rc != 0:
+        log.warning(f"Step1 failed for {tid} (rc={rc}).")
+        return rc
+    log.info(f"[OK] Inspect tile ready: {workdir_tile}")
+    return 0
+
+
 # argparse
 
 def main(argv: list[str] | None = None) -> int:
@@ -227,6 +254,18 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument('--sleep-sec', type=float, default=0)
     bt.add_argument('--limit', type=int, default=0)
     bt.set_defaults(func=cmd_download_from_tiles)
+
+
+    ins = sub.add_parser('inspect', help='One-off Step 1 download at given RA/Dec')
+    ins.add_argument('--ra', required=True, type=float)
+    ins.add_argument('--dec', required=True, type=float)
+    ins.add_argument('--workdir-root', default=WORKDIR_ROOT)
+    ins.add_argument('--size-arcmin', type=float, default=10.0)     # default 10′ for inspection
+    ins.add_argument('--survey', default=SURVEY)                     # dss1-red
+    ins.add_argument('--pixel-scale-arcsec', dest='pixel_scale_arcsec', type=float, default=PIXEL_SCALE)
+    ins.add_argument('--pixel-scale', dest='pixel_scale_arcsec', type=float, default=PIXEL_SCALE)
+    ins.set_defaults(func=cmd_inspect)
+
 
     args = ap.parse_args(argv)
     if hasattr(args, 'func'): return args.func(args)
