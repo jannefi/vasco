@@ -15,12 +15,12 @@ GAIA_TABLE="${1:-I/355/gaiadr3}"
 PS1_TABLE="${2:-II/349/ps1}"
 
 # Helpers
-has_data_rows () {
-  # returns 0 if CSV exists and has >=1 data row (non-header)
+has_data_rows() {
   local f="$1"
-  [[ -s "$f" ]] || return 1
+  [[ -s "$f" ]] || return 1   # file exists and non-empty?
+  # Count lines minus header
   local rows
-  rows=$(awk 'END{print NR-1}' "$f" 2>/dev/null || echo 0)
+  rows=$(awk 'NR>1{c++} END{print c+0}' "$f" 2>/dev/null)
   [[ ${rows:-0} -gt 0 ]]
 }
 
