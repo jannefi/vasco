@@ -53,7 +53,7 @@ def dedupe_by_cells(df, ra_col, dec_col, tol_arcsec):
     # Decide best representative per cell
     out = (
         df.groupby(["_ra_cell", "_dec_cell"], sort=False)
-          .apply(lambda g: pick_best(g))
+          .apply(lambda g: pick_best(g), include_groups=False)
           .reset_index(drop=True)
     )
     return out.drop(columns=["_ra_cell", "_dec_cell"], errors="ignore")
