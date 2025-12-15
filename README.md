@@ -290,7 +290,13 @@ python ./scripts/summarize_runs.py --data-dir data
 
 python ./scripts/merge_tile_catalogs.py --tiles-root ./data/tiles --tolerance-arcsec 0.5
 
-python ./scripts/compare_vasco_vs_optical.py --vasco data/vasco-svo/vanish_neowise_1765546031.csv --optical-master data/vasco-svo/_master_tile_catalog_pass2.csv --out-dir data
+# convert large csv into Parquet
+python ./scripts/make_master_optical_parquet.py --csv data/tiles/_master_tile_catalog_pass2.csv \
+    --out data/local-cats/_master_optical_parquet --bin-deg 5 \
+    --chunksize 500000
+
+# compare vasco dataset against optical (parquet). This is fast and memory friendly
+python scripts/compare_vasco_vs_optical.py --vasco data/vasco-cats/vanish_neowise_1765546031.csv --radius-arcsec 2.0   --bin-deg 5   --chunk-size 20000   --out-dir data/local-cats/out/v3_match   --write-chunks
 ```
 If everything went ok, you should find vasco_matched_to_optical.csv and vasco_still_ir_only.csv in the data folder.   
 
