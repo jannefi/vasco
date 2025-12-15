@@ -113,6 +113,11 @@ def _validate_within_5_arcsec(xmatch_csv: Path) -> Path:
     _ensure_tool('stilts')
     import csv, subprocess
     xmatch_csv = Path(xmatch_csv)
+    stem = xmatch_csv.stem
+    if stem.endswith('_within5arcsec'):
+        out = xmatch_csv
+    else:
+        out = xmatch_csv.with_name(stem + '_within5arcsec.csv')
     out = xmatch_csv.with_name(xmatch_csv.stem + '_within5arcsec.csv')
     with open(xmatch_csv, newline='') as f:
         header = next(csv.reader(f), [])

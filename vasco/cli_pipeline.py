@@ -22,6 +22,11 @@ def _validate_within5_arcsec_unit_tolerant(xmatch_csv: Path) -> Path:
     import csv
     _ensure_tool_cli('stilts')
     xmatch_csv = Path(xmatch_csv)
+    stem = xmatch_csv.stem
+    if stem.endswith('_within5arcsec'):
+        out = xmatch_csv  # overwrite/rewrite the same file
+    else:
+        out = xmatch_csv.with_name(stem + '_within5arcsec.csv')
     out = xmatch_csv.with_name(xmatch_csv.stem + '_within5arcsec.csv')
     with open(xmatch_csv, newline='') as f:
         header = next(csv.reader(f), [])
@@ -542,6 +547,9 @@ def cmd_step5_filter_within5(args: argparse.Namespace) -> int:
         return 2
     wrote = 0
     for csv in xdir.glob('*.csv'):
+        name = csv.name
+        if name.endswith('_within5arcsec.csv'):
+            continue
         try:
             _validate_within5_arcsec_unit_tolerant(csv)
             wrote += 1
