@@ -2,7 +2,7 @@
 # VASCO (v0.07.1) — PSF‑aware pipeline re‑production of MNRAS 515(1):1380
 
 <p align="center">
-  <img src="./first-light/plots/first_light_banner.png" alt="VASCO — first‑light (pilot) banner" />
+  <img src="./images/readme-key-figures-light.svg" alt="VASCO banner" />
 </p>
 
 **important note on Vizier CDS time-outs**
