@@ -1,4 +1,8 @@
 # VASCO — First‑light (pilot)
+<p align="center">
+  <img src="./plots/first_light_banner.png" alt="VASCO banner" />
+</p>
+
 
 This folder captures a minimal, end‑to‑end **first‑light** result: matching the published **NEOWISE‑only** VASCO catalogue (171,753 rows) against optical detections produced by the PSF‑aware pipeline over a small pilot footprint (\<300 tiles of 30′×30′).
 
