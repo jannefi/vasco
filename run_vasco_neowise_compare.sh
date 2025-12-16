@@ -47,7 +47,7 @@ fi
 # --- Run in the requested order ---
 {
   echo "[INFO] 1/5 filter_unmatched_all.py (backend=cds, tol-cdss=0.05)"
-  python ./scripts/filter_unmatched_all.py --data-dir "$DATA_DIR" --backend cds --tol-cdss 0.05
+  python ./scripts/filter_unmatched_all.py --data-dir "$DATA_DIR" --tol-cdss 0.05
 
   echo "[INFO] 2/5 summarize_runs.py"
   python ./scripts/summarize_runs.py --data-dir "$DATA_DIR"
@@ -55,7 +55,7 @@ fi
   echo "[INFO] 3/5 merge_tile_catalogs.py (tolerance 0.5 arcsec)"
   python ./scripts/merge_tile_catalogs.py --tiles-root "$TILES_ROOT" --tolerance-arcsec 0.5
 
-  echo "[INFO] 4/5 Conver large csv file to parquet format"
+  echo "[INFO] 4/5 Convert large csv file to parquet format"
   python ./scripts/make_master_optical_parquet.py --csv data/tiles/_master_tile_catalog_pass2.csv --out data/local-cats/_master_optical_parquet --bin-deg 5 --chunksize 500000
   echo "[INFO] 5/5 compare_vasco_vs_optical.py"
   python ./scripts/compare_vasco_vs_optical.py --vasco "$VASCO_CSV" --radius-arcsec 2.0 --bin-deg 5 --chunk-size 20000 --out-dir data/local-cats/out/v3_match --write-chunks
