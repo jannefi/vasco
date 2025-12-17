@@ -54,6 +54,7 @@ COPY *.py /app/
 COPY *.md /app/
 COPY *.yml /app/
 COPY *.yaml /app/
+COPY *.sh /app/
 
 # note: symlinks last
 RUN ln -s /usr/bin/python3 /usr/bin/python \
