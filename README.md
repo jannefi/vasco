@@ -26,6 +26,8 @@ Paper: https://academic.oup.com/mnras/article/515/1/1380/6607509
 
 The pipeline:
 
+**New** See [See the typical pipeline use scenario](WORKFLOW.md)
+
 ---
 
 ## Prerequisites (local runs)
@@ -59,8 +61,6 @@ stilts -version
   ```
 
 > If you run inside **Docker**, these tools are bundled in the image; see the Docker section below.
-
-
 
 1. **Download** a DSS1‑red tile (POSSI‑E only; see below) and save the FITS + a JSON **header sidecar**.
 2. **Detect** sources using **SExtractor** (pass 1), then build a **PSFEx** model.
