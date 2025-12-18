@@ -53,7 +53,7 @@ fi
   python ./scripts/summarize_runs.py --data-dir "$DATA_DIR"
 
   echo "[INFO] 3/5 merge_tile_catalogs.py (tolerance 0.5 arcsec)"
-  python ./scripts/merge_tile_catalogs.py --tiles-root "$TILES_ROOT" --tolerance-arcsec 0.5
+  python ./scripts/merge_tile_catalogs.py --tiles-root "$TILES_ROOT" --tolerance-arcsec 0.5 --write-master
 
   echo "[INFO] 4/5 Convert large csv file to parquet format"
   python ./scripts/make_master_optical_parquet.py --csv data/tiles/_master_tile_catalog_pass2.csv --out data/local-cats/_master_optical_parquet --bin-deg 5 --chunksize 500000
