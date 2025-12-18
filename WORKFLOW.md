@@ -232,7 +232,7 @@ The VASCO pipeline is designed to be robust, but due to the nature of random sky
 <details>
 <summary>Tree-style (best viewed on GitHub or GFM-compatible viewers)</summary>
 
-
+```text
 data/tiles/<tileid>/
 ├── raw/
 │   ├── <tileid>.fits
@@ -269,6 +269,7 @@ data/tiles/<tileid>/
 ├── qa_mag_vs_snr.png
 ├── qa_fwhm_vs_mag.png
 ├── qa_ellipticity_vs_mag.png
-├── qa_class_star_vs_mag
+├── qa_class_star_vs_mag.png
+
 
  
