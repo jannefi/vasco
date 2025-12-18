@@ -121,6 +121,12 @@ After processing a large number of tiles (e.g., 1,000+), run the following scrip
 
 ---
 
+### Post-Pipeline Step 0: Per‑tile Astrometric Correction (Gaia tie)
+- **Script:** `./scripts/fit_plate_solution.py --tiles-folder ./data/tiles`
+- **Purpose:** Fit a polynomial plate solution per tile using Gaia matches; write corrected coordinates to `final_catalog_wcsfix.csv`.
+- **Outputs:** `./data/tiles/<tileid>/final_catalog_wcsfix.csv`
+- **Downstream:** Post 1 (`filter_unmatched_all.py`) automatically prefers corrected RA/Dec; Post 2 (`summarize_runs.py`) reports `tiles_with_wcsfix`; Post 3 (`merge_tile_catalogs.py`) prefers corrected columns where present.
+
 ### **Post-Pipeline Step 1: Filter Unmatched Sources**
 - **Script:**  
   `./scripts/filter_unmatched_all.py --data-dir ./data --tol-cdss 0.05`
@@ -176,6 +182,7 @@ After processing a large number of tiles (e.g., 1,000+), run the following scrip
 | Step | Script/Command | Purpose | Key Output(s) | Optional? |
 |------|---------------|---------|---------------|-----------|
 | 1–6 | `run-random.py steps ...` | Per-tile processing | Per-tile catalogues, matches, summaries | No |
+| Post 0 | `fit_plate_solution.py` | Per-tile astrometric correction (Gaia) | Match/Unmatched CSVs | No |
 | Post 1 | `filter_unmatched_all.py` | Per-tile unmatched lists | Unmatched CSVs | No |
 | Post 2 | `summarize_runs.py` | Aggregate run summary | Markdown/CSV summaries | No |
 | Post 3 | `merge_tile_catalogs.py` | Merge/dedupe all tile catalogues | Master CSVs | No |

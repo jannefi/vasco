@@ -25,6 +25,39 @@ import sys
 from pathlib import Path
 from typing import List
 
+
+def pick_detection_catalog(tile_dir):
+    """
+    Returns (det_csv_path, ra_col, dec_col) for the tile.
+    Prefers final_catalog_wcsfix.csv (RA_corr/Dec_corr), falls back to final_catalog.csv,
+    then catalogs/sextractor_pass2.csv.
+    """
+    import pandas as pd
+    # 1) corrected final
+    wcsfix = tile_dir / "final_catalog_wcsfix.csv"
+    if wcsfix.exists():
+        df = pd.read_csv(wcsfix, engine="python", on_bad_lines="skip")
+        if {"RA_corr","Dec_corr"}.issubset(df.columns):
+            return wcsfix, "RA_corr", "Dec_corr"
+    # 2) base final
+    base_final = tile_dir / "final_catalog.csv"
+    if base_final.exists():
+        df = pd.read_csv(base_final, engine="python", on_bad_lines="skip")
+        if {"ALPHAWIN_J2000","DELTAWIN_J2000"}.issubset(df.columns):
+            return base_final, "ALPHAWIN_J2000", "DELTAWIN_J2000"
+        elif {"ALPHA_J2000","DELTA_J2000"}.issubset(df.columns):
+            return base_final, "ALPHA_J2000", "DELTA_J2000"
+    # 3) pass2 fallback
+    det_csv = tile_dir / "catalogs" / "sextractor_pass2.csv"
+    if det_csv.exists():
+        df = pd.read_csv(det_csv, engine="python", on_bad_lines="skip")
+        if {"ALPHAWIN_J2000","DELTAWIN_J2000"}.issubset(df.columns):
+            return det_csv, "ALPHAWIN_J2000", "DELTAWIN_J2000"
+        elif {"ALPHA_J2000","DELTA_J2000"}.issubset(df.columns):
+            return det_csv, "ALPHA_J2000", "DELTA_J2000"
+    # default fallback
+    return det_csv, "ALPHA_J2000", "DELTA_J2000"
+
 # ------------------------- subprocess helper -------------------------
 
 def run(cmd: List[str], dry: bool=False) -> int:
@@ -140,7 +173,7 @@ def process_tile(tile_dir: Path, tol_cdss: float, positional: bool, dry: bool) -
     xmatch = tile_dir / 'xmatch'
     if not (catalogs.exists() and xmatch.exists()):
         return 0
-    det_csv = catalogs / 'sextractor_pass2.csv'
+    det_csv, ra1_col, dec1_col = pick_detection_catalog(tile_dir)
     if not det_csv.exists():
         return 0
 
@@ -182,9 +215,9 @@ def process_tile(tile_dir: Path, tol_cdss: float, positional: bool, dry: bool) -
 
     # Optional positional fallback
     if positional:
-        if gaia_match and stilts_positional_unmatched(det_csv, gaia_match, xmatch/'sex_gaia_unmatched_cdss_pos.csv', 'RAJ2000','DEJ2000', tol_cdss, dry):
+        if gaia_match and stilts_positional_unmatched(det_csv, gaia_match, xmatch/'sex_gaia_unmatched_cdss_pos.csv', ra1_col, dec1_col, 'RAJ2000','DEJ2000', tol_cdss, dry):
             wrote += 1
-        if ps1_match and stilts_positional_unmatched(det_csv, ps1_match, xmatch/'sex_ps1_unmatched_cdss_pos.csv', 'RAJ2000','DEJ2000', tol_cdss, dry):
+        if ps1_match and stilts_positional_unmatched(det_csv, gaia_match, xmatch/'sex_gaia_unmatched_cdss_pos.csv', ra1_col, dec1_col, 'RAJ2000','DEJ2000', tol_cdss, dry):
             wrote += 1
 
     return wrote

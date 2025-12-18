@@ -124,6 +124,7 @@ def summarize_tiles_root(tiles_root: Path):
         "gaia_unmatched_cdss_pos": 0, "ps1_unmatched_cdss_pos": 0,
         "gaia_unmatched_local": 0, "ps1_unmatched_local": 0, "usnob_unmatched": 0,
         "final_no_optical_counterparts": 0,
+        "tiles_with_wcsfix": 0,
         # tile-derived metrics
         "tiles_total": len(tile_dirs),
         "tiles_with_catalogs": 0,
@@ -140,6 +141,9 @@ def summarize_tiles_root(tiles_root: Path):
         if has_catalog: agg["tiles_with_catalogs"] += 1
         if has_xmatch:  agg["tiles_with_xmatch"] += 1
         if has_final:   agg["tiles_with_final"] += 1
+        has_wcsfix = (td / "final_catalog_wcsfix.csv").exists()
+        if has_wcsfix: agg["tiles_with_wcsfix"] += 1
+
 
     # Totals
     for r in per_tile_counts:
@@ -225,6 +229,7 @@ def write_compact_lines_md(base_dir: str, sections: list[dict]) -> str:
         lines.append(f"- GAIA unmatched (local) %: {r.get('gaia_unmatched_local_pct', 0.0):.2f}\n")
         lines.append(f"- PS1 unmatched (local) %: {r.get('ps1_unmatched_local_pct', 0.0):.2f}\n")
         lines.append(f"- USNOB unmatched %: {r.get('usnob_unmatched_pct', 0.0):.2f}\n")
+        lines.append(f"- tiles_with_wcsfix: {r.get('tiles_with_wcsfix', 0)}\n")
         lines.append(f"- final_no_optical_counterparts %: {r.get('final_no_optical_counterparts_pct', 0.0):.2f}\n")
     out.write_text(''.join(lines), encoding="utf-8")
     return str(out)
@@ -249,6 +254,7 @@ def write_summary_csv(base_dir: str, rows: list[dict]) -> str:
         "gaia_matched_pct","ps1_matched_pct",
         "gaia_unmatched_cdss_pct","ps1_unmatched_cdss_pct",
         "gaia_unmatched_local_pct","ps1_unmatched_local_pct","usnob_unmatched_pct",
+        "tiles_with_wcsfix",
         "final_no_optical_counterparts_pct",
     ]
     with open(out, "w", newline="", encoding="utf-8") as f:

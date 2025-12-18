@@ -4,6 +4,33 @@
 <p align="center">
   <img src="./images/readme-key-figures-light.svg" alt="VASCO banner" />
 </p>
+<details>
+<summary>Update 18-Dec-2025</summary>
+
+## Software update based on internal audit
+We performed an internal audit to sanity‑check the current software run and ensure our pipeline faithfully reproduces the MNRAS 2022 methodology. The primary goals were to (1) verify that our matching and reporting weren’t obscuring true coverage, and (2) confirm the astrometric accuracy needed for the “no Gaia & no PS1 within 5″” criterion documented in our workflow
+
+### Findings
+- Metrics interpretation: The “matched %” lines in summaries were pair‑count densities (joins), not per‑detection coverage. This can exceed 100% and mislead downstream readers
+- Astrometry drift on photographic plates (DSS1/POSS‑I): Many tiles showed median residuals ~0.5–1.0″ and P90 ~1.2–1.8″, typical when relying only on catalogue WCS and non‑windowed centroids
+- Outcome after fixes: After switching to windowed centroids and adding a per‑tile Gaia‑tied plate solution, warnings dropped dramatically (only a small handful remain, mostly low‑match tiles)
+
+### How it was fixed
+A post‑pipeline Step 0 script that fits a per‑tile polynomial plate solution to Gaia matches, then writes corrected coordinates into each tile’s final_catalog_wcsfix.csv. Downstream scripts now prefer these corrected columns if present:
+- Post‑0: fit plate solution → writes final_catalog_wcsfix.csv (columns: RA_corr, Dec_corr)
+- Post‑1: unmatched & final → automatically uses corrected RA/Dec where available (filter_unmatched_all.py)
+- Post‑2: run summaries → now also reports tiles_with_wcsfix (summarize_runs.py)
+- Post‑3: merge catalogs → prefers corrected RA/Dec when present (merge_tile_catalogs.py)
+
+### what do you need to do
+Update to the latest version, rebuild docker and keep running. More reading [in the workflow doc](WORKFLOW.md)
+
+### what to expect next
+NeoWISE filtering will be implemented when time permits. NeoWISE will filter out vast majority of sources so I won't implement it before more data has went through the pipeline and analysis.
+
+</details>
+
+..........
 
 **important note on Vizier CDS time-outs**
 Before running, execute: `source scripts/.env.cds-fast.sh` for good env values
@@ -284,6 +311,8 @@ OUT_DIR=/path/to/out
 ```
 Individual commands:
 ```bash
+python ./scripts/fit_plate_solution.py --tiles-folder ./data/tiles
+
 python ./scripts/filter_unmatched_all.py --data-dir ./data 
 
 python ./scripts/summarize_runs.py --data-dir data

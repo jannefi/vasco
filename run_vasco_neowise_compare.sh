@@ -45,7 +45,10 @@ if [ ! -d "$OPTICAL_MASTER" ]; then
 fi
 
 # --- Run in the requested order ---
-{
+{ 
+  echo "[INFO] 0/5 fit_plate_solution.py Fit a polynomial plate solution per tile using Gaia matches"
+  python ./scripts/fit_plate_solution.py --tiles-folder ./data/tiles
+  
   echo "[INFO] 1/5 filter_unmatched_all.py (backend=cds, tol-cdss=0.05)"
   python ./scripts/filter_unmatched_all.py --data-dir "$DATA_DIR" --tol-cdss 0.05
 
