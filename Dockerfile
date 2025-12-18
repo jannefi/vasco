@@ -41,6 +41,7 @@ RUN pip install --no-cache-dir --break-system-packages \
     matplotlib \
     pandas \
     astroquery \
+    scikit-learn \
     pyarrow
 
 # --- 5. Copy Local Application Assets ---

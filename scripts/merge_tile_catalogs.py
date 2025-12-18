@@ -26,8 +26,8 @@ import argparse
 from pathlib import Path
 import pandas as pd
 
-CAND_RA = ["ALPHA_J2000", "RA", "X_WORLD", "RAJ2000"]
-CAND_DEC = ["DELTA_J2000", "DEC", "Y_WORLD", "DEJ2000"]
+CAND_RA  = ["RA_corr", "ALPHAWIN_J2000", "ALPHA_J2000", "RA", "X_WORLD", "RAJ2000"]
+CAND_DEC = ["Dec_corr", "DELTAWIN_J2000", "DELTA_J2000", "DEC", "Y_WORLD", "DEJ2000"]
 
 
 def find_coord_columns(df):
