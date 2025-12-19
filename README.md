@@ -1,145 +1,143 @@
 
-# VASCO (v0.07.1) — PSF‑aware pipeline re‑production of MNRAS 515(1):1380
+# VASCO: Reproducing the Image Processing Pipeline from MNRAS 515(1):1380
 
-<p align="center">
-  <img src="./images/readme-key-figures-light.svg" alt="VASCO banner" />
-</p>
-<details>
-<summary>Update 18-Dec-2025</summary>
+**This repository re‑implements the core data‑processing workflow described in “Discovering vanishing objects in POSS I red images using the Virtual Observatory” (Solano et al., MNRAS 2022).**
 
-## Software update based on internal audit
-We performed an internal audit to sanity‑check the current software run and ensure our pipeline faithfully reproduces the MNRAS 2022 methodology. The primary goals were to (1) verify that our matching and reporting weren’t obscuring true coverage, and (2) confirm the astrometric accuracy needed for the “no Gaia & no PS1 within 5″” criterion documented in our workflow
+VASCO enables reproducible research on astronomical objects that have vanished from the sky, using digitised photographic plates and modern catalogues. The pipeline is designed for both astronomers and programmers interested in large-scale sky surveys and time-domain astronomy.
 
-### Findings
-- Metrics interpretation: The “matched %” lines in summaries were pair‑count densities (joins), not per‑detection coverage. This can exceed 100% and mislead downstream readers
-- Astrometry drift on photographic plates (DSS1/POSS‑I): Many tiles showed median residuals ~0.5–1.0″ and P90 ~1.2–1.8″, typical when relying only on catalogue WCS and non‑windowed centroids
-- Outcome after fixes: After switching to windowed centroids and adding a per‑tile Gaia‑tied plate solution, warnings dropped dramatically (only a small handful remain, mostly low‑match tiles)
-
-### How it was fixed
-A post‑pipeline Step 0 script that fits a per‑tile polynomial plate solution to Gaia matches, then writes corrected coordinates into each tile’s final_catalog_wcsfix.csv. Downstream scripts now prefer these corrected columns if present:
-- Post‑0: fit plate solution → writes final_catalog_wcsfix.csv (columns: RA_corr, Dec_corr)
-- Post‑1: unmatched & final → automatically uses corrected RA/Dec where available (filter_unmatched_all.py)
-- Post‑2: run summaries → now also reports tiles_with_wcsfix (summarize_runs.py)
-- Post‑3: merge catalogs → prefers corrected RA/Dec when present (merge_tile_catalogs.py)
-
-### what do you need to do
-Update to the latest version, rebuild docker and keep running. More reading [in the workflow doc](WORKFLOW.md)
-
-### what to expect next
-NeoWISE filtering will be implemented when time permits. NeoWISE will filter out vast majority of sources so I won't implement it before more data has went through the pipeline and analysis.
-
-</details>
-
-..........
-
-**important note on Vizier CDS time-outs**
-Before running, execute: `source scripts/.env.cds-fast.sh` for good env values
-if Vizier CDS is busy and starts to time-out etc. try with these:
-
-```bash
-export VASCO_CDS_MODE=chunked
-export VASCO_CDS_CHUNK_ROWS=500   # or 300 if still noisy
-export VASCO_CDS_BLOCKSIZE=omit   # or =500 to align with chunks
-export VASCO_CDS_MAX_RETRIES=2
-export VASCO_CDS_BASE_BACKOFF=2.0
-export VASCO_CDS_INTER_CHUNK_DELAY=1.0
-export VASCO_CDS_JITTER=1.0
-export VASCO_CDS_PRECALL_SLEEP=1
-```
-
-This repository re‑implements the core data‑processing workflow described in 
-**“Discovering vanishing objects in POSS I red images using the Virtual Observatory”** (Enrique Solano, B Villarroel, C Rodrigo, Monthly Notices of the Royal Astronomical Society, Volume 515, Issue 1, September 2022, Pages 1380–1391 https://doi.org/10.1093/mnras/stac1552)
-
-Article link: https://academic.oup.com/mnras/article/515/1/1380/6607509
-
-The pipeline:
-
-**New** See [See the typical pipeline use scenario](WORKFLOW.md)
+> **Article link:** https://academic.oup.com/mnras/article/515/1/1380/6607509
 
 ---
 
-## Prerequisites (local runs)
+## Table of Contents
 
-For **local** (non‑Docker) runs, install and ensure these tools are on your `PATH`:
+- [Project Overview](#project-overview)
+- [Key Terms](#key-terms)
+- [Key Figures](#key-figures)
+- [Workflow Summary](#workflow-summary)
+- [Quick Start](#quick-start)
+- [Installation & Prerequisites](#installation--prerequisites)
+- [Detailed Usage](#detailed-usage)
+- [Docker Usage](#docker-usage)
+- [Troubleshooting](#troubleshooting)
+- [Audit Findings & Technical Notes](#audit-findings--technical-notes)
+- [Coverage Estimates](#coverage-estimates)
+- [License & Contributions](#license--contributions)
 
-- **Python** ≥ 3.10 (with `pip`) and scientific libs: `astropy`, `numpy`, `pandas`
-- **SExtractor** (binary `sex` or `sextractor`)
-- **PSFEx** (binary `psfex`)
-- **STILTS** (binary `stilts`) — required for CDS cross‑matching and CSV filtering
+---
 
-**Verify** your setup:
+## Project Overview
+
+VASCO aims to reproduce and extend the methodology of a recent astronomical study that searched for objects which have disappeared from the sky over decades, using digitised photographic plates and modern catalogues. This repository provides a pipeline to process, cross-match, and analyse these data, making the research accessible and reproducible for both astronomers and interested programmers.
+
+---
+
+## Key Terms
+
+- **Tile**: A small, square region of the sky processed as a unit.
+- **Catalogue**: A list of detected astronomical sources with their properties.
+- **Xmatch**: Cross-matching, i.e., associating detections with entries in external catalogues (Gaia, PS1).
+- **Detection**: An object identified in an image tile.
+
+---
+
+## Key Figures
+
+![Key Figures](./images/readme-key-figures-light.svg)
+
+*The above graphic summarises the previous status of my pipeline.*
+
+---
+
+## Workflow Summary
+
+1. **Download** sky image tiles (POSS I red, POSSI-E enforced).
+2. **Detect** sources in each tile using SExtractor (pass 1).
+3. **Build** a point spread function (PSF) model with PSFEx.
+4. **Re-detect** with PSF-aware SExtractor (pass 2).
+5. **Cross-match** detections with external catalogues (Gaia, PS1) using CDS/VizieR.
+6. **Filter** matched sources to ≤ 5″.
+7. **Summarise** results and write per-tile run artefacts.
+
+For a detailed workflow, see [WORKFLOW.md](WORKFLOW.md).
+
+---
+
+## Quick Start
+
+1. **Set CDS tables** (host and/or container):
+    ```bash
+    export VASCO_CDS_GAIA_TABLE="I/350/gaiaedr3"
+    export VASCO_CDS_PS1_TABLE="II/389/ps1_dr2"
+    ```
+
+
+2. **(Optional) Download some tiles**:
+    ```bash
+    python run-random.py download_loop --size-arcmin 30 --survey dss1-red --pixel-scale-arcsec 1.7
+    ```
+
+3. **Sweep steps**:
+    ```bash
+    python run-random.py steps --steps step4-xmatch,step5-filter-within5,step6-summarize \
+      --workdir-root data/tiles --xmatch-backend cds --xmatch-radius 5.0
+    ```
+
+4. **Inspect per-tile outputs** (`xmatch/`, `RUN_*`) and logs (`xmatch/STEP4_CDS.log`, `logs/run_random.log`).
+
+---
+
+## Installation & Prerequisites
+
+### Local (non-Docker) Runs
+
+Ensure these tools are on your `PATH`:
+
+- **Python** ≥ 3.10 (`pip`), with following libraries: `astropy`, `numpy`, `pandas`, `astroquery`, `scikit-learn`, `pyarrow`
+- **SExtractor** (`sex` or `sextractor`)
+- **PSFEx** (`psfex`)
+- **STILTS** (`stilts`) — required for CDS cross-matching and CSV filtering
+
+**Verify your setup:**
 ```bash
 python -V
 python -c "import astropy, numpy, pandas; print('OK')"
-sex -v   # or: sextractor -v
+sex -v         # or: sextractor -v OR source-extractor -v
 psfex -v
-stilts -version
 ```
 
-**Install tips**
-- **Debian/Ubuntu** (example; versions may vary):
-  ```bash
-  sudo apt-get update && sudo apt-get install -y sextractor psfex default-jre
-  # STILTS: download the latest tarball from http://www.starlink.ac.uk/stilts/ and place `stilts` on PATH
-  ```
-- **macOS** (Homebrew):
-  ```bash
-  brew install sextractor psfex openjdk
-  # STILTS: download app/tarball from the STILTS site; add `stilts` to PATH
-  ```
+## Docker usage
+Use the container image **`astro-tools:latest`** that bundles Python, SExtractor, PSFEx, STILTS, and system dependencies.
 
-> If you run inside **Docker**, these tools are bundled in the image; see the Docker section below.
+### Build the image
+```bash
+docker build -t astro-tools:latest .
+```
 
-1. **Download** a DSS1‑red tile (POSSI‑E only; see below) and save the FITS + a JSON **header sidecar**.
-2. **Detect** sources using **SExtractor** (pass 1), then build a **PSFEx** model.
-3. **Re‑detect** with a PSF‑aware SExtractor (pass 2).
-4. **Cross‑match** detections to **Gaia** + **PS1** using **CDS** (VizieR) services by default.
-   *PS1 is automatically skipped south of −30° declination; the decision is logged.*
-5. **Filter** matched sources to **≤ 5″**.
-6. **Summarize** results and write per‑tile run artifacts.
-
----
-
-## CDS backend (default; set these before running)
-
-We follow the paper’s spirit by using **CDS/VizieR** instead of local catalog downloads.
-Export these **on your host** and **inside the container**:
+### Run an interactive shell, then execute commands
+> **Important:** export the CDS variables **inside** the container shell before running pipeline commands.
 
 ```bash
-# Gaia EDR3 (CDS)
+docker run -it --rm   -v "$PWD:/workspace"   -w /workspace   astro-tools:latest bash
+
+# Inside the container:
 export VASCO_CDS_GAIA_TABLE="I/350/gaiaedr3"
-
-# Pan-STARRS DR2 (CDS) – PS1 is auto-skipped for Dec < -30°
 export VASCO_CDS_PS1_TABLE="II/389/ps1_dr2"
+
+# Example — sweep steps 4, 5, and 6 over mounted data
+python run-random.py steps   --steps step4-xmatch,step5-filter-within5,step6-summarize   --workdir-root data/tiles   --xmatch-backend cds   --xmatch-radius 5.0
 ```
+## Detailed Usage
 
-Optional toggles:
+Please read [the workflow documentation](WORKFLOW.md)
 
-```bash
-# Disable PS1 entirely (affects both local and CDS backends)
-export VASCO_DISABLE_PS1=1
-
-# Disable USNO-B on the local backend (CDS path typically uses Gaia + PS1)
-export VASCO_DISABLE_USNOB=1
-```
-
----
-
-## POSSI‑E enforcement (Step 1)
-
-After each download, the FITS header is read and the tile is **kept only if** `SURVEY == "POSSI-E"`.
-*Non‑POSS plates are discarded and logged.* For retained tiles we write:
-`raw/<fits>.fits.header.json` containing selected header keys (plate id, WCS, dates) **plus** a full header dump.
-
----
-
-## The main tool: `run-random.py`
+### The main tool: `run-random.py`
 
 `run-random.py` is the entry point for downloading tiles and sweeping steps across your tile tree under `data/tiles/`.
 
-### Subcommands
+#### Subcommands
 
-#### 1) `download_loop`
+##### 1) `download_loop`
 Continuously performs **Step 1** (download) at random sky positions until you interrupt it.
 
 ```bash
@@ -152,7 +150,7 @@ python run-random.py download_loop   --sleep-sec 15   --size-arcmin 30   --surve
 - `--survey` *(str, default `dss1-red`)*  
 - `--pixel-scale-arcsec` *(float, default 1.7)* (alias: `--pixel-scale`)
 
-#### 2) `steps`
+##### 2) `steps`
 Scans existing tile folders and runs the **requested steps only where outputs are missing**.
 
 ```bash
@@ -184,7 +182,7 @@ python run-random.py steps   --steps step4-xmatch,step5-filter-within5,step6-sum
   - `xmatch/sex_ps1_xmatch_cdss.csv` *(PS1 auto‑skipped for Dec < −30°; see `xmatch/STEP4_CDS.log`)*  
   - `xmatch/*_within5arcsec.csv`
 
-#### 3) `download_from_tiles` *(optional helper)*
+##### 3) `download_from_tiles` *(optional helper)*
 Re‑downloads **Step 1** for each existing tile folder (RA/Dec parsed from the folder name).
 
 ```bash
@@ -201,7 +199,7 @@ python run-random.py download_from_tiles   --workdir-root data/tiles   --force  
 
 ---
 
-## Outputs (per tile folder)
+### Outputs (per tile folder)
 
 `data/tiles/tile-RA<deg>-DEC<deg>/`
 
@@ -220,66 +218,83 @@ python run-random.py download_from_tiles   --workdir-root data/tiles   --force  
 
 ---
 
-## Docker — interactive (Option B)
+## CDS backend (default; set these before running)
 
-Use the container image **`astro-tools:latest`** that bundles Python, SExtractor, PSFEx, STILTS, and system dependencies.
-
-### Build the image
-```bash
-docker build -t astro-tools:latest .
-```
-
-### Run an interactive shell, then execute commands
-> **Important:** export the CDS variables **inside** the container shell before running pipeline commands.
+We follow the paper’s spirit by using **CDS/VizieR** instead of local catalog downloads.
+Export these **on your host** and **inside the container**:
 
 ```bash
-docker run -it --rm   -v "$PWD:/workspace"   -w /workspace   astro-tools:latest bash
-
-# Inside the container:
+# Gaia EDR3 (CDS)
 export VASCO_CDS_GAIA_TABLE="I/350/gaiaedr3"
-export VASCO_CDS_PS1_TABLE="II/389/ps1_dr2"
 
-# Example — sweep steps 4, 5, and 6 over mounted data
-python run-random.py steps   --steps step4-xmatch,step5-filter-within5,step6-summarize   --workdir-root data/tiles   --xmatch-backend cds   --xmatch-radius 5.0
-```
-
----
-
-## Quick start
-
-1) **Set CDS tables** (host and/or container):
-```bash
-export VASCO_CDS_GAIA_TABLE="I/350/gaiaedr3"
+# Pan-STARRS DR2 (CDS) – PS1 is auto-skipped for Dec < -30°
 export VASCO_CDS_PS1_TABLE="II/389/ps1_dr2"
 ```
 
-2) **(Optional) Download some tiles**
-```bash
-python run-random.py download_loop --size-arcmin 30 --survey dss1-red --pixel-scale-arcsec 1.7
-```
 
-3) **Sweep steps**
-```bash
-python run-random.py steps   --steps step4-xmatch,step5-filter-within5,step6-summarize   --workdir-root data/tiles   --xmatch-backend cds   --xmatch-radius 5.0
-```
 
-4) **Inspect per‑tile outputs** (`xmatch/`, `RUN_*`) and logs (`xmatch/STEP4_CDS.log`, `logs/run_random.log`).
+### Optional toggles:
+
+```bash
+# Disable PS1 entirely (affects both local and CDS backends)
+export VASCO_DISABLE_PS1=1
+
+# Disable USNO-B on the local backend (CDS path typically uses Gaia + PS1)
+export VASCO_DISABLE_USNOB=1
+```
 
 ---
-
 ## Troubleshooting
 
 - **PS1 south of −30°** — not an error; PS1 has no coverage there. The runner skips PS1 automatically and logs it in `xmatch/STEP4_CDS.log`.
 - **Non‑POSS tiles** — if a tile’s FITS header isn’t POSSI‑E, Step 1 discards it; the run counters record it as “Non‑POSS filtered”.
 - **No CLI output when calling `python -m vasco.cli_pipeline` directly** — ensure you run from the repo root or set `PYTHONPATH="$PWD"`. The runner (`run-random.py`) sets this automatically for its subprocesses.
 
+if Vizier CDS is busy and starts to time-out etc. try with these:
+
+```bash
+export VASCO_CDS_MODE=chunked
+export VASCO_CDS_CHUNK_ROWS=500   # or 300 if still noisy
+export VASCO_CDS_BLOCKSIZE=omit   # or =500 to align with chunks
+export VASCO_CDS_MAX_RETRIES=2
+export VASCO_CDS_BASE_BACKOFF=2.0
+export VASCO_CDS_INTER_CHUNK_DELAY=1.0
+export VASCO_CDS_JITTER=1.0
+export VASCO_CDS_PRECALL_SLEEP=1
+```
+
+
 ---
+# Audit findings & Technical Notes
+<details>
+<summary>Update 18-Dec-2025</summary>
 
-## License & contributions
+## Software update based on internal audit
+We performed an internal audit to sanity‑check the current software run and ensure our pipeline faithfully reproduces the MNRAS 2022 methodology. The primary goals were to (1) verify that our matching and reporting weren’t obscuring true coverage, and (2) confirm the astrometric accuracy needed for the “no Gaia & no PS1 within 5″” criterion documented in our workflow
 
-See `LICENSE` (if present). PRs/issues are welcome for reliability, data provenance, and reproducibility improvements.
+### Findings
+- Metrics interpretation: The “matched %” lines in summaries were pair‑count densities (joins), not per‑detection coverage. This can exceed 100% and mislead downstream readers
+- Astrometry drift on photographic plates (DSS1/POSS‑I): Many tiles showed median residuals ~0.5–1.0″ and P90 ~1.2–1.8″, typical when relying only on catalogue WCS and non‑windowed centroids
+- Outcome after fixes: After switching to windowed centroids and adding a per‑tile Gaia‑tied plate solution, warnings dropped dramatically (only a small handful remain, mostly low‑match tiles)
 
-## Coverage estimates with 30′×30′ tiles (POSS‑I ~ Dec ≥ −30°)
+### How it was fixed
+A post‑pipeline Step 0 script that fits a per‑tile polynomial plate solution to Gaia matches, then writes corrected coordinates into each tile’s final_catalog_wcsfix.csv. Downstream scripts now prefer these corrected columns if present:
+- Post‑0: fit plate solution → writes final_catalog_wcsfix.csv (columns: RA_corr, Dec_corr)
+- Post‑1: unmatched & final → automatically uses corrected RA/Dec where available (filter_unmatched_all.py)
+- Post‑2: run summaries → now also reports tiles_with_wcsfix (summarize_runs.py)
+- Post‑3: merge catalogs → prefers corrected RA/Dec when present (merge_tile_catalogs.py)
+
+### what do you need to do
+Update to the latest version, rebuild docker and keep running. More reading [in the workflow doc](WORKFLOW.md)
+
+### what to expect next
+NeoWISE filtering will be implemented when time permits. NeoWISE will filter out vast majority of sources so I won't implement it before more data has went through the pipeline and analysis.
+
+</details>
+
+## Coverage estimates 
+
+Estimates with 30′×30′ tiles (POSS‑I ~ Dec ≥ −30°)
 
 **Assumptions**
 - Full sky area: ~41,253 deg²
@@ -296,52 +311,6 @@ See `LICENSE` (if present). PRs/issues are welcome for reliability, data provena
 > Example: for a 20% subsample (~24,752 tiles), attempt **~25,989–27,227 downloads**.
 
 ---
+## License & contributions
 
-## final steps afer all steps have completed for all tiles
-
-Copy vanish_neowise_nnnn.csv via http://svocats.cab.inta-csic.es/vanish-neowise/index.php?action=search to data/vasco-svo/ folder. This is the list of vanishing objects seen in NEOWISE but not in the optical / infrared (171753 rows)
-
-commands listed below are collected in a shell script: `run_vasco_neowise_compare.sh` which can utilize the following envs:
-
-```bash
-DATA_DIR=/path/to/data \
-TILES_ROOT=/path/to/data/tiles \
-VASCO_CSV=/path/to/data/vasco-svo/vanish_neowise_1765546031.csv \
-OPTICAL_MASTER=/path/to/data/vasco-svo/_master_tile_catalog_pass2.csv \
-OUT_DIR=/path/to/out
-```
-Individual commands:
-```bash
-python ./scripts/fit_plate_solution.py --tiles-folder ./data/tiles
-
-python ./scripts/filter_unmatched_all.py --data-dir ./data 
-
-python ./scripts/summarize_runs.py --data-dir data
-
-python ./scripts/merge_tile_catalogs.py --tiles-root ./data/tiles --tolerance-arcsec 0.5
-
-# convert large csv into Parquet
-python ./scripts/make_master_optical_parquet.py --csv data/tiles/_master_tile_catalog_pass2.csv \
-    --out data/local-cats/_master_optical_parquet --bin-deg 5 \
-    --chunksize 500000
-
-# compare vasco dataset against optical (parquet). This is fast and memory friendly
-python scripts/compare_vasco_vs_optical.py --vasco data/vasco-cats/vanish_neowise_1765546031.csv --radius-arcsec 2.0   --bin-deg 5   --chunk-size 20000   --out-dir data/local-cats/out/v3_match   --write-chunks
-```
-If everything went ok, you should find vasco_matched_to_optical.csv and vasco_still_ir_only.csv in the data folder.   
-
-## Command Reference
-
-| Command | Purpose | Common Flags | Outputs / Notes |
-|---|---|---|---|
-| `python run-random.py download_loop` | Continuously run **Step 1** downloads at random positions (POSSI‑E enforced) | `--sleep-sec` (default 15), `--size-arcmin` (default 30), `--survey` (default `dss1-red`), `--pixel-scale-arcsec` (alias: `--pixel-scale`, default 1.7) | Keeps only POSSI‑E plates; writes `raw/<fits>.fits` + `raw/<fits>.fits.header.json`; activity in `logs/run_random.log`. |
-| `python run-random.py steps` | Sweep existing tiles and run **requested steps** only where outputs are missing | `--steps` (required; any of `step2-pass1, step3-psf-and-pass2, step4-xmatch, step5-filter-within5, step6-summarize`), `--workdir-root` (default `data/tiles`), `--limit`, `--size-arcmin` | **CDS backend** (default): use `--xmatch-backend cds`, `--xmatch-radius`, `--cds-gaia-table`, `--cds-ps1-table`. Writes `xmatch/*.csv`, `*_within5arcsec.csv`, `RUN_*`. **Idempotent**: runs only if outputs are missing. PS1 is auto‑skipped south of −30°; see `xmatch/STEP4_CDS.log`. |
-| `python run-random.py download_from_tiles` | Re‑download **Step 1** per existing tile folder (RA/Dec parsed from folder name) | `--workdir-root` (default `data/tiles`), `--force` (delete raw FITS + sidecars first), `--only-missing` / `--no-only-missing`, `--size-arcmin`, `--survey`, `--pixel-scale-arcsec`, `--sleep-sec`, `--limit` | Useful for refreshing tiles after enabling POSSI‑E guard; writes the same raw outputs as Step 1. |
-| `docker run -it --rm -v "$PWD:/workspace" -w /workspace astro-tools:latest bash` | Start interactive container shell with repo mounted | (inside container) export `VASCO_CDS_GAIA_TABLE` and `VASCO_CDS_PS1_TABLE` | Run `python run-random.py steps …` inside the container; ensure CDS env vars are set **in the container** before commands. |
-
-**Environment variables (recap):**
-
-- `VASCO_CDS_GAIA_TABLE` — e.g., `I/350/gaiaedr3`
-- `VASCO_CDS_PS1_TABLE` — e.g., `II/389/ps1_dr2`
-- `VASCO_DISABLE_PS1=1` — optional: disable PS1 entirely
-- `VASCO_DISABLE_USNOB=1` — optional: disable USNO‑B for local backend
+See `LICENSE` (if present). PRs/issues are welcome for reliability, data provenance, and reproducibility improvements.
