@@ -114,13 +114,13 @@ for tile in data/tiles/tile-*; do
     echo "[STEP5] Skipped (within5 CSVs present)"
   fi
 
-  # 3) Step 6 (summary) if RUN_SUMMARY.md missing
-  if [[ ! -f "$tile/RUN_SUMMARY.md" ]]; then
+  # 3) Step 6 (summary) if final_catalog.csv missing
+  if [[ ! -f "$tile/final_catalog.csv" ]]; then
     echo "[STEP6] summarize"
     python -u -m vasco.cli_pipeline step6-summarize \
       --workdir "$tile" --export csv --hist-col FWHM_IMAGE || true
   else
-    echo "[STEP6] Skipped (RUN_SUMMARY.md present)"
+    echo "[STEP6] Skipped (final_catalog.csv present)"
   fi
 done
 
