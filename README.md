@@ -48,8 +48,9 @@ export VASCO_CDS_PRECALL_SLEEP=1
 ```
 
 This repository re‑implements the core data‑processing workflow described in 
-**“Vanishing & Appearing Sources during a Century of Observations”** (MNRAS 515(1):1380, 2022).
-Paper: https://academic.oup.com/mnras/article/515/1/1380/6607509
+**“Discovering vanishing objects in POSS I red images using the Virtual Observatory”** (Enrique Solano, B Villarroel, C Rodrigo, Monthly Notices of the Royal Astronomical Society, Volume 515, Issue 1, September 2022, Pages 1380–1391 https://doi.org/10.1093/mnras/stac1552)
+
+Article link: https://academic.oup.com/mnras/article/515/1/1380/6607509
 
 The pipeline:
 
