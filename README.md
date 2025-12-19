@@ -19,6 +19,7 @@ VASCO enables reproducible research on astronomical objects that have vanished f
 - [Installation & Prerequisites](#installation--prerequisites)
 - [Detailed Usage](#detailed-usage)
 - [Docker Usage](#docker-usage)
+- [Final Steps & Advanced Commands](#final-steps--advanced-commands)
 - [Troubleshooting](#troubleshooting)
 - [Audit Findings & Technical Notes](#audit-findings--technical-notes)
 - [Coverage Estimates](#coverage-estimates)
@@ -265,7 +266,34 @@ export VASCO_CDS_PRECALL_SLEEP=1
 
 
 ---
-# Audit findings & Technical Notes
+## Final Steps & Advanced Commands
+
+After all steps have completed for all tiles, copy vanish_neowise_nnnn.csv via http://svocats.cab.inta-csic.es/vanish-neowise/index.php?action=search to data/vasco-svo/ folder.
+
+Run this script 
+```bash
+run_vasco_neowise_compare.sh
+```
+
+The bash script executes these commands:
+```bash
+python ./scripts/fit_plate_solution.py --tiles-folder ./data/tiles
+python ./scripts/filter_unmatched_all.py --data-dir ./data
+python ./scripts/summarize_runs.py --data-dir data
+python ./scripts/merge_tile_catalogs.py --tiles-root ./data/tiles --tolerance-arcsec 0.5
+
+# Convert large csv into Parquet
+python ./scripts/make_master_optical_parquet.py --csv data/tiles/_master_tile_catalog_pass2.csv \
+  --out data/local-cats/_master_optical_parquet --bin-deg 5 --chunksize 500000
+
+# Compare vasco dataset against optical (parquet)
+python scripts/compare_vasco_vs_optical.py --vasco data/vasco-cats/vanish_neowise_1765546031.csv \
+  --radius-arcsec 2.0 --bin-deg 5 --chunk-size 20000 --out-dir data/local-cats/out/v3_match
+```
+If everything went OK, you should find vasco_matched_to_optical.csv and vasco_still_ir_only.csv in the data folder.
+
+---
+## Audit findings & Technical Notes
 <details>
 <summary>Update 18-Dec-2025</summary>
 
