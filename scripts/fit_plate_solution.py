@@ -74,6 +74,10 @@ def process_tile(tile_dir, args):
 
     if not os.path.exists(gpath) or not os.path.exists(fcat_path):
         return False, "missing required files"
+    
+    # if output exists, skip
+    if os.path.exists(out_path):
+        return True, "output file already exists"
 
     try:
         gdf = pd.read_csv(gpath, engine="python", on_bad_lines="skip")
