@@ -57,7 +57,8 @@ def _stscidss_params(ra_deg: float, dec_deg: float, size_arcmin: float, survey_k
     }.get(survey_key.lower(), '1')
     base = 'https://archive.stsci.edu/cgi-bin/dss_search'
     params = {
-        'v': v, 'r': '{:.6f}'.format(ra_deg), 'd': '{:.6f}'.format(dec_deg), 'e': 'J2000',
+        # force possi1_red to -v. It is unodumented but works.
+        'v': 'poss1_red', 'r': '{:.6f}'.format(ra_deg), 'd': '{:.6f}'.format(dec_deg), 'e': 'J2000', 
         'h': '{:.2f}'.format(size_arcmin), 'w': '{:.2f}'.format(size_arcmin),
         'f': 'fits', 'c': 'none', 'fov': 'NONE', 'v3': ''
     }
