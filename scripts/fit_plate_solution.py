@@ -38,7 +38,7 @@ def pick_radec(df):
     return None, None
 
 def pick_gaia(df):
-    for ra, dec in [("RA_ICRS", "DE_ICRS"), ("RAJ2000", "DEJ2000"), ("RA", "DEC")]:
+    for ra, dec in [("RA_ICRS", "DE_ICRS"), ("RAJ2000", "DEJ2000"), ("RA", "DEC"), ("ra", "dec")]:
         if has_cols(df, ra, dec):
             return ra, dec
     return None, None
