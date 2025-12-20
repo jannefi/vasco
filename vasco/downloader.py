@@ -101,57 +101,99 @@ def _normalize_fits_bytes(buf: bytes) -> tuple[bytes, bool]:
 # -----------------------------------------------------------------------------
 # Public API (STScI-only; SkyView disabled)
 # -----------------------------------------------------------------------------
-def fetch_skyview_dss(ra_deg: float, dec_deg: float, *,
-  size_arcmin: float=60.0,
-  survey: str='dss1-red',
-  pixel_scale_arcsec: float=1.7,  # unused; kept for signature compatibility
-  out_dir: Path | str='.',
-  basename: str | None=None,
-  user_agent: str=_DEF_UA,
-  logger: logging.Logger | None=None) -> Path:
-    """Fetch DSS imagery from **STScI only**. If `survey` is 'poss1-e', strictly enforce
-    POSS-I E by inspecting FITS headers and failing on mismatch.
 
-    Note: STScI `dss_search` supports survey generation via `v=1/2` only; underlying
-    plate series (POSS vs SERC/AAO) are chosen by declination zone. We enforce POSS-I E
-    post-download by inspecting FITS headers.
-    References: DSS script usage (v=1/2), survey mapping by hemisphere.
+def fetch_skyview_dss(
+    ra_deg: float,
+    dec_deg: float,
+    *,
+    size_arcmin: float = 60.0,
+    survey: str = 'dss1-red',
+    pixel_scale_arcsec: float = 1.7,  # unused; kept for signature compatibility
+    out_dir: Path | str = '.',
+    basename: str | None = None,
+    user_agent: str = _DEF_UA,
+    logger: logging.Logger | None = None
+) -> Path:
     """
-    out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    Fetch DSS imagery from **STScI only**. We retain the hidden 'v=poss1_red' knob
+    and add transactional writes, stricter sanity checks, and normalized naming.
+
+    - Writes to a temporary file first; promotes to final name only when checks pass.
+    - Normalizes RA to [0,360) and clamps Dec to [-90,+90] for both request and name.
+    - Quantizes RA/Dec to 3 decimals in the filename to align with tile_id resolution.
+    - Logs standardized reason tokens on failures (REJECT_NON_FITS, REJECT_NON_WCS, etc.).
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     lg = logger or logging.getLogger('vasco.downloader')
-    tag = (survey.lower()).replace(' ','-')
-    name = basename or f"{tag}_{ra_deg:.6f}_{dec_deg:.6f}_{int(round(size_arcmin))}arcmin.fits"
-    out_path = out_dir / name
 
-    url, p = _stscidss_params(ra_deg, dec_deg, size_arcmin, survey, user_agent)
+    # --- normalize inputs for request and naming ---
+    def _norm_ra(x: float) -> float:
+        r = float(x) % 360.0
+        return r if r >= 0.0 else (r + 360.0)
+
+    def _clamp_dec(x: float) -> float:
+        d = float(x)
+        return 90.0 if d > 90.0 else (-90.0 if d < -90.0 else d)
+
+    nra = _norm_ra(ra_deg)
+    ndec = _clamp_dec(dec_deg)
+
+    tag = (survey.lower()).replace(' ', '-')
+    qra = f"{nra:.3f}"
+    qdec = f"{ndec:.3f}"
+    name = basename or f"{tag}_{qra}_{qdec}_{int(round(size_arcmin))}arcmin.fits"
+    final_path = out_dir / name
+
+    # Build STScI request (keeps your hidden 'v=poss1_red' override)
+    url, params = _stscidss_params(nra, ndec, size_arcmin, survey, user_agent)
     lg.info('[GET] STScI DSS RA=%.6f Dec=%.6f size=%.2f arcmin v=%s',
-            ra_deg, dec_deg, size_arcmin, p.get('v'))
+            nra, ndec, size_arcmin, params.get('v'))
 
-    content, ctype = _http_get(url, dict(p))
+    # HTTP + FITS normalization
+    content, ctype = _http_get(url, dict(params))
     data, ok = _normalize_fits_bytes(content)
     if not ok:
-        bad = out_path.with_suffix('.html')
+        bad = final_path.with_suffix('.html')
         bad.write_bytes(content)
-        lg.error('[FAIL] Non-FITS from STScI (Content-Type=%s, len=%d) -> %s', ctype, len(content), bad)
+        lg.error('[REJECT_NON_FITS] Content-Type=%s bytes=%d -> %s', ctype, len(content), bad.name)
         raise RuntimeError(f'STScI returned non-FITS: {ctype}')
 
-    out_path.write_bytes(data)
-    lg.info('[OK] wrote %s (%d bytes)', str(out_path), len(data))
+    # --- transactional write: temp -> validate -> promote ---
+    tmp = final_path.with_name('.tmp_' + final_path.name)
+    tmp.write_bytes(data)
 
-    # Strict enforcement: POSS-I E only (when requested)
+    # quick FITS sanity (minimal WCS keys + readable primary HDU)
+    try:
+        with fits.open(tmp, memmap=False) as hdul:
+            hdr = hdul[0].header if hdul and hdul[0].header else {}
+            # Minimal WCS sanity
+            for k in ('NAXIS1', 'NAXIS2', 'CRVAL1', 'CRVAL2'):
+                if k not in hdr:
+                    lg.error('[REJECT_NON_WCS] Missing key %s in %s', k, tmp.name)
+                    tmp.unlink(missing_ok=True)
+                    raise RuntimeError('FITS missing minimal WCS keys')
+            survey_name = str(hdr.get('SURVEY', '')).upper()
+    except Exception as e:
+        lg.error('[REJECT_FITS_OPEN] %s', e)
+        try:
+            tmp.unlink(missing_ok=True)
+        finally:
+            pass
+        raise
+
+    # strict POSS-I enforcement only when explicitly requested via 'poss1-e'
     if survey.lower() == 'poss1-e':
-        with fits.open(out_path, memmap=False) as hdul:
-            hdr = hdul[0].header
-            sname = str(hdr.get('SURVEY','')).upper()  # e.g. 'POSS-I E', 'SERC-EJ'
-            origin = str(hdr.get('ORIGIN','')).upper()
-            plate = str(hdr.get('PLATEID','')).upper()
-        if not (('POSS' in sname) or ('POSS-I' in sname) or ('POSS E' in sname) or ('POSS-E' in sname)):
-            lg.error('[ENFORCE] Requested POSS-I E but header shows SURVEY=%r ORIGIN=%r PLATEID=%r',
-                     sname or 'UNKNOWN', origin or 'UNKNOWN', plate or 'UNKNOWN')
-            # STScI-only policy: do not auto-replace via SkyView. Fail fast.
-            raise RuntimeError(f'Non-POSS plate returned by STScI: SURVEY={sname!r} '                                '(declination likely outside POSS coverage)')
+        if not (('POSS' in survey_name) or ('POSS-I' in survey_name) or ('POSS E' in survey_name) or ('POSS-E' in survey_name)):
+            lg.error('[ENFORCE][REJECT_NON_POSS] SURVEY=%r (declination likely outside POSS coverage)', survey_name or 'UNKNOWN')
+            tmp.unlink(missing_ok=True)
+            raise RuntimeError(f'Non-POSS plate returned by STScI: SURVEY={survey_name!r}')
 
-    return out_path
+    # promote temp -> final
+    tmp.replace(final_path)
+    lg.info('[OK] wrote %s (%d bytes)', str(final_path), len(data))
+    return final_path
+
 
 # -----------------------------------------------------------------------------
 # Batch fetch helpers (unchanged signatures; STScI-only inside)

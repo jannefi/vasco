@@ -20,6 +20,7 @@ VASCO enables reproducible research on astronomical objects that have vanished f
 - [Detailed Usage](#detailed-usage)
 - [Docker Usage](#docker-usage)
 - [Final Steps & Advanced Commands](#final-steps--advanced-commands)
+- [Recent Improvements](#recent-improvements)
 - [Troubleshooting](#troubleshooting)
 - [Audit Findings & Technical Notes](#audit-findings--technical-notes)
 - [Coverage Estimates](#coverage-estimates)
@@ -334,6 +335,42 @@ Update to the latest version, rebuild docker and keep running. More reading [in 
 NeoWISE filtering will be implemented when time permits. NeoWISE will filter out vast majority of sources so I won't implement it before more data has went through the pipeline and analysis.
 
 </details>
+
+## Recent Improvements
+
+### Pipeline Hardening and Data Integrity Improvements
+
+Recent updates have made the VASCO pipeline more robust, reliable, and easier to maintain. These changes improve data quality, reduce the risk of partial or invalid files, and make troubleshooting and maintenance more straightforward.
+
+#### Key Improvements
+
+- **Transactional Downloads:**  
+  FITS files are now downloaded to a temporary location and only moved to their final destination if they pass strict FITS and WCS sanity checks. This prevents incomplete or invalid files from appearing in the data tree.
+
+- **POSSI-E Enforcement:**  
+  The pipeline strictly enforces that only POSSI-E plates are accepted for processing. Any non-POSS plates are immediately rejected and logged with a clear reason.
+
+- **Normalised Filenames:**  
+  RA values are wrapped to [0, 360) and Dec values are clamped to [-90, +90]. Filenames use three decimal places for RA/Dec, matching the tile ID granularity and ensuring consistency across runs.
+
+- **Sanitised Cross-match Inputs:**  
+  Before cross-matching with CDS (Gaia/PS1), the SExtractor CSV is sanitised so that all RA/Dec values are within valid bounds. This prevents errors such as “RA < 0 or > 360!” during STILTS processing.
+
+- **Standardised Logging:**  
+  All failure reasons are now tagged with clear, greppable tokens (e.g., `REJECT_NON_FITS`, `REJECT_NON_WCS`, `SKIP_PS1_DEC_LT_-30`). This makes it much easier to audit and maintain the pipeline.
+
+- **Cleaner Data Tree:**  
+  The improvements above, along with periodic use of the `cleanup_non_possi_tiles.py` script, ensure that only valid, processable tiles remain in the data folder. This speeds up backfills and downstream analysis.
+
+#### What This Means for Users
+
+- The pipeline is now more resilient to edge cases and external service quirks.
+- Downstream scripts and aggregation tools will benefit from cleaner, more consistent input data.
+- Maintenance and troubleshooting are easier, thanks to improved logging and file naming.
+- No changes are required for downstream scripts or analysis workflows.
+
+For more details on the cleaner script and how to maintain your data tree, see the [Cleaning Up Non-POSS-I and Empty Tile Folders](#cleaning-up-non-poss-i-and-empty-tile-folders) section.
+
 
 ## Coverage estimates 
 

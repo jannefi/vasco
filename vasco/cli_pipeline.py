@@ -14,6 +14,47 @@ from vasco.utils.cdsskymatch import cdsskymatch
 
 # --- helpers ---
 
+def _normalize_ra(val: float) -> float:
+    r = float(val) % 360.0
+    return r if r >= 0.0 else (r + 360.0)
+
+def _clamp_dec(val: float) -> float:
+    d = float(val)
+    return 90.0 if d > 90.0 else (-90.0 if d < -90.0 else d)
+
+def _sanitize_sextractor_csv(src_csv: Path, dst_csv: Path, ra_col: str, dec_col: str) -> Path:
+    """
+    Create a sanitized copy of the SExtractor CSV:
+      - RA wrapped into [0, 360)
+      - DEC clamped into [-90, +90]
+    This avoids STILTS cdsskymatch failures like "field RA < 0 or > 360!".
+    Streaming implementation (no large memory footprint).
+    """
+    import csv as pycsv
+    src_csv = Path(src_csv)
+    dst_csv = Path(dst_csv)
+    if src_csv.resolve() == dst_csv.resolve():
+        # refuse to overwrite source in-place
+        dst_csv = dst_csv.with_name(dst_csv.stem + '_sanitized.csv')
+
+    with src_csv.open('r', newline='', encoding='utf-8', errors='ignore') as fin, \
+         dst_csv.open('w', newline='', encoding='utf-8') as fout:
+        r = pycsv.DictReader(fin)
+        fieldnames = r.fieldnames or []
+        w = pycsv.DictWriter(fout, fieldnames=fieldnames)
+        w.writeheader()
+        for row in r:
+            try:
+                row[ra_col]  = f"{_normalize_ra(float(row[ra_col])):.10f}"
+                row[dec_col] = f"{_clamp_dec(float(row[dec_col])):.10f}"
+            except Exception:
+                # if parsing fails, keep original; STILTS will drop bads, but we won't crash
+                pass
+            w.writerow(row)
+
+    return dst_csv
+
+
 def _ensure_tool_cli(tool: str) -> None:
     if shutil.which(tool) is None:
         raise RuntimeError(f"Required tool '{tool}' not found in PATH.")
@@ -130,7 +171,10 @@ def _enforce_possi_e_or_skip(fits_path: Path, logger) -> None:
 def _expected_stem(ra: float, dec: float, survey: str, size_arcmin: float) -> str:
     sv_name = dl.SURVEY_ALIASES.get(survey.lower(), survey)
     tag = sv_name.lower().replace(' ', '-')
-    return f"{tag}_{ra:.6f}_{dec:.6f}_{int(round(size_arcmin))}arcmin"
+    ra_n = _normalize_ra(ra)
+    dec_n = _clamp_dec(dec)
+    return f"{tag}_{ra_n:.3f}_{dec_n:.3f}_{int(round(size_arcmin))}arcmin"
+
 
 def _to_float_ra(val: str | float) -> float:
     try:
@@ -379,23 +423,49 @@ def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
     subprocess.run(['stilts','tcopy', f'in={str(pass2_ldac)}+2', f'out={str(sex_csv)}', 'ofmt=csv'], check=True)
     return sex_csv
 
-def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0, cds_gaia_table: str | None = None, cds_ps1_table: str | None = None) -> None:
+
+def _cds_xmatch_tile(
+    tile_dir,
+    pass2_ldac,
+    *,
+    radius_arcsec: float = 5.0,
+    cds_gaia_table: str | None = None,
+    cds_ps1_table: str | None = None
+) -> None:
     tile_dir = Path(tile_dir)
-    xdir = tile_dir / 'xmatch'; xdir.mkdir(parents=True, exist_ok=True)
+    xdir = tile_dir / 'xmatch'
+    xdir.mkdir(parents=True, exist_ok=True)
+
+    # Prepare SExtractor CSV
     sex_csv = _ensure_sextractor_csv(tile_dir, pass2_ldac)
-    sex_cols = _detect_radec_columns(sex_csv) or ('ALPHA_J2000','DELTA_J2000')
+    sex_cols = _detect_radec_columns(sex_csv) or ('ALPHA_J2000', 'DELTA_J2000')
     ra_col, dec_col = sex_cols
 
-    # Gaia
+    # --- NEW: sanitize a copy to avoid "RA < 0 or > 360!" in STILTS ---
+    san_csv = xdir / 'sextractor_pass2_sanitized.csv'
+    try:
+        _sanitize_sextractor_csv(sex_csv, san_csv, ra_col, dec_col)
+        sex_for_cds = san_csv
+    except Exception as e:
+        _cds_log(xdir, f"[STEP4][CDS][WARN] Sanitize SExtractor CSV failed: {e}")
+        sex_for_cds = sex_csv  # fall back gracefully
+
+    # GAIA (all-sky; we still guard RA domain via sanitized CSV)
     if cds_gaia_table:
         out_gaia = xdir / 'sex_gaia_xmatch_cdss.csv'
         try:
-            if os.getenv("VASCO_CDS_PRECALL_SLEEP", "0") in ("1","true","True"):
+            if os.getenv("VASCO_CDS_PRECALL_SLEEP", "0") in ("1", "true", "True"):
                 time.sleep(10.0)
             _cds_log(xdir, f"[STEP4][CDS] Start — radius={radius_arcsec} arcsec; GAIA={cds_gaia_table!r}; PS1={cds_ps1_table!r}")
-            _cds_log(xdir, f"[STEP4][CDS] Using SExtractor CSV: {sex_csv.name} (RA={ra_col}, DEC={dec_col})")
+            _cds_log(xdir, f"[STEP4][CDS] Using CSV: {Path(sex_for_cds).name} (RA={ra_col}, DEC={dec_col})")
             _cds_log(xdir, f"[STEP4][CDS] Query Gaia table {cds_gaia_table} -> {out_gaia.name}")
-            cdsskymatch(sex_csv, out_gaia, ra=ra_col, dec=dec_col, cdstable=cds_gaia_table, radius_arcsec=radius_arcsec, find='best', ofmt='csv', omode='out', blocksize=1000)
+            cdsskymatch(
+                sex_for_cds, out_gaia,
+                ra=ra_col, dec=dec_col,
+                cdstable=cds_gaia_table,
+                radius_arcsec=radius_arcsec,
+                find='best', ofmt='csv', omode='out', blocksize=1000
+            )
             _validate_within5_arcsec_unit_tolerant(out_gaia)
             rows = _csv_row_count(out_gaia)
             _cds_log(xdir, f"[STEP4][CDS] Gaia OK — rows={rows}")
@@ -404,21 +474,28 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0, cds_ga
     else:
         _cds_log(xdir, "[STEP4][CDS] Gaia table not provided — skipping")
 
-    # PS1 coverage guard (Fix A) — skip south of -30 deg
+    # PS1 coverage guard (center-based; already in your version)
     if cds_ps1_table:
         if os.getenv('VASCO_DISABLE_PS1'):
             _cds_log(xdir, "[STEP4][CDS] PS1 disabled by env — skipping")
             return
         center = _tile_center_from_index_or_name(tile_dir)
         if center and center[1] < -30.0:
-            _cds_log(xdir, f"[STEP4][CDS] PS1 skipped (Dec={center[1]:.3f} < -30°, outside survey coverage)")
+            _cds_log(xdir, f"[STEP4][CDS] SKIP_PS1_DEC_LT_-30 (Dec={center[1]:.3f} < -30°)")
             return
+
         out_ps1 = xdir / 'sex_ps1_xmatch_cdss.csv'
         try:
-            if os.getenv("VASCO_CDS_PRECALL_SLEEP", "0") in ("1","true","True"):
+            if os.getenv("VASCO_CDS_PRECALL_SLEEP", "0") in ("1", "true", "True"):
                 time.sleep(10.0)
             _cds_log(xdir, f"[STEP4][CDS] Query PS1 table {cds_ps1_table} -> {out_ps1.name}")
-            cdsskymatch(sex_csv, out_ps1, ra=ra_col, dec=dec_col, cdstable=cds_ps1_table, radius_arcsec=radius_arcsec, find='best', ofmt='csv', omode='out', blocksize=1000,)
+            cdsskymatch(
+                sex_for_cds, out_ps1,
+                ra=ra_col, dec=dec_col,
+                cdstable=cds_ps1_table,
+                radius_arcsec=radius_arcsec,
+                find='best', ofmt='csv', omode='out', blocksize=1000,
+            )
             _validate_within5_arcsec_unit_tolerant(out_ps1)
             rows = _csv_row_count(out_ps1)
             _cds_log(xdir, f"[STEP4][CDS] PS1 OK — rows={rows}")
@@ -426,6 +503,7 @@ def _cds_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0, cds_ga
             _cds_log(xdir, f"[STEP4][CDS][WARN] PS1 xmatch failed: {e}")
     else:
         _cds_log(xdir, "[STEP4][CDS] PS1 table not provided — skipping")
+
 
 # --- CDS logging & helpers ---
 
