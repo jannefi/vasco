@@ -280,8 +280,12 @@ python scripts/cleanup_non_possi_tiles.py --mode all --verbose
 
 # Actually delete flagged folders (permanent)
 python scripts/cleanup_non_possi_tiles.py --mode all --apply
-``
+```
 ---
+### Docker kills your script
+
+Docker might terminate your script without much warnings or other messages than "Killed". Usually that means the script is using too much memory. Docker has a default memory limit of 4-8GB. Increase it to 16. You might want to consider increasing the CPU, swap size and disk usage limits, too.
+
 ## Final Steps & Advanced Commands
 
 After all steps have completed for all tiles, copy vanish_neowise_nnnn.csv via http://svocats.cab.inta-csic.es/vanish-neowise/index.php?action=search to data/vasco-svo/ folder.
