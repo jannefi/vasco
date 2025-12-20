@@ -338,6 +338,10 @@ NeoWISE filtering will be implemented when time permits. NeoWISE will filter out
 
 ## Recent Improvements
 
+### Gaia xmatch column names
+
+Some post-processing scripts expect Gaia cross-match columns to be named `RA_ICRS`/`DE_ICRS`, `RAJ2000`/`DEJ2000`, or `RA`/`DEC`. If you encounter warnings about missing RA/Dec columns, check if your CSVs use lowercase `ra`/`dec` and update the script to recognise these as well. Support for lower-case ra/dec was added to `fit_plate_solution.py` script.
+
 ### Pipeline Hardening and Data Integrity Improvements
 
 Recent updates have made the VASCO pipeline more robust, reliable, and easier to maintain. These changes improve data quality, reduce the risk of partial or invalid files, and make troubleshooting and maintenance more straightforward.
