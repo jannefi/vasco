@@ -263,8 +263,23 @@ export VASCO_CDS_INTER_CHUNK_DELAY=1.0
 export VASCO_CDS_JITTER=1.0
 export VASCO_CDS_PRECALL_SLEEP=1
 ```
+### About partial xmatch coverage
 
+Partial xmatch coverage is expected near survey edges and does not indicate a pipeline error. This can happen with either PS1 or Gaia CDS. If any of the tile coordinates are outside PS1 AND Gaia coverage, the tile will be ignored downstream. If the coordinates are within PS1 or Gaia, but not both, the tile will be included in downstream. The effect on the science results is in any case negligible, especially after NeoWISE filtering.
 
+### Cleaning Up Non-POSS-I and Empty Tile Folders
+
+Over time, the tile data folder (`./data/tiles/`) may accumulate legacy or empty tile directories, especially from earlier runs before strict POSSI-E enforcement. These folders can slow down backfill and aggregation scripts.
+
+To safely remove non-POSS-I tiles (e.g., SERC survey) and empty tile folders, use the provided cleaner script:
+
+```bash
+# Dry-run: see what would be deleted (no changes made)
+python scripts/cleanup_non_possi_tiles.py --mode all --verbose
+
+# Actually delete flagged folders (permanent)
+python scripts/cleanup_non_possi_tiles.py --mode all --apply
+``
 ---
 ## Final Steps & Advanced Commands
 
