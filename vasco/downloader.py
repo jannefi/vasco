@@ -1,6 +1,6 @@
 
 from __future__ import annotations
-import logging, gzip
+import logging, gzip, json
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Tuple
