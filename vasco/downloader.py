@@ -4,31 +4,36 @@ import logging, gzip
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import List, Tuple
+from datetime import datetime, timezone
 from astropy.io import fits
 
 __all__ = [
- 'configure_logger','fetch_skyview_dss','fetch_many',
- 'tessellate_centers','fetch_tessellated','SURVEY_ALIASES'
+    'configure_logger','fetch_skyview_dss','fetch_many',
+    'tessellate_centers','fetch_tessellated','SURVEY_ALIASES'
 ]
 
 _DEF_UA = 'VASCO/0.06.9 (+downloader stsci-only)'
 
 # Aliases accepted by CLI. Note: STScI DSS selects plate series by declination for DSS1/2.
 SURVEY_ALIASES = {
-  'dss1'      : 'DSS1',
-  'dss1-red'  : 'DSS1 Red',
-  'dss1-blue' : 'DSS1 Blue',
-  'dss'       : 'DSS',
-  'dss2-red'  : 'DSS2 Red',
-  'dss2-blue' : 'DSS2 Blue',
-  'dss2-ir'   : 'DSS2 IR',
-  # Intent: POSS-I E (red). STScI will still choose plate by declination; we enforce via header.
-  'poss1-e'   : 'DSS1 Red',
+    'dss1'      : 'DSS1',
+    'dss1-red'  : 'DSS1 Red',
+    'dss1-blue' : 'DSS1 Blue',
+    'dss'       : 'DSS',
+    'dss2-red'  : 'DSS2 Red',
+    'dss2-blue' : 'DSS2 Blue',
+    'dss2-ir'   : 'DSS2 IR',
+    # Intent: POSS-I E (red). We will enforce POSSI-E header prior to promotion (see below).
+    'poss1-e'   : 'DSS1 Red',
 }
 
-# -----------------------------------------------------------------------------
+# Staging & errors roots (repo-local)
+STAGING_ROOT = Path('./data/.staging')
+ERRORS_ROOT  = Path('./data/errors')
+
+# -----------------------------
 # Logging
-# -----------------------------------------------------------------------------
+# -----------------------------
 def configure_logger(out_dir: Path) -> logging.Logger:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -41,33 +46,33 @@ def configure_logger(out_dir: Path) -> logging.Logger:
         sh = logging.StreamHandler(); sh.setFormatter(fmt); lg.addHandler(sh)
     return lg
 
-# -----------------------------------------------------------------------------
+# -----------------------------
 # STScI DSS helpers
-# -----------------------------------------------------------------------------
+# -----------------------------
 def _stscidss_params(ra_deg: float, dec_deg: float, size_arcmin: float, survey_key: str,
                      user_agent: str) -> tuple[str, dict]:
-    # STScI supports ONLY generation selection via v=1 (DSS1) or v=2 (DSS2);
-    # plate series (POSS vs SERC/AAO) are chosen by declination zone.
     # See: https://stdatu.stsci.edu/dss/script_usage.html (v parameter)
     # Mapping summary: https://gsss.stsci.edu/SkySurveys/Surveys.htm
-    v = {
-        'dss1':'1','dss1-red':'1','dss1-blue':'1',
-        'dss2-red':'2','dss2-blue':'2','dss2-ir':'2',
-        'poss1-e':'1',  # explicit intent for POSS-I E => DSS1 Red (v=1)
-    }.get(survey_key.lower(), '1')
     base = 'https://archive.stsci.edu/cgi-bin/dss_search'
     params = {
-        # force possi1_red to -v. It is unodumented but works.
-        'v': 'poss1_red', 'r': '{:.6f}'.format(ra_deg), 'd': '{:.6f}'.format(dec_deg), 'e': 'J2000', 
-        'h': '{:.2f}'.format(size_arcmin), 'w': '{:.2f}'.format(size_arcmin),
-        'f': 'fits', 'c': 'none', 'fov': 'NONE', 'v3': ''
+        # Hidden but working knob: 'v=poss1_red' biases to POSS-I E plates
+        'v': 'poss1_red',
+        'r': '{:.6f}'.format(ra_deg),
+        'd': '{:.6f}'.format(dec_deg),
+        'e': 'J2000',
+        'h': '{:.2f}'.format(size_arcmin),
+        'w': '{:.2f}'.format(size_arcmin),
+        'f': 'fits',
+        'c': 'none',
+        'fov': 'NONE',
+        'v3': ''
     }
     headers = {'User-Agent': user_agent or _DEF_UA}
     p2 = dict(params); p2['__headers__'] = headers; return base, p2
 
-# -----------------------------------------------------------------------------
+# -----------------------------
 # HTTP + FITS normalization
-# -----------------------------------------------------------------------------
+# -----------------------------
 def _http_get(url: str, params: dict, timeout: float=60.0):
     import requests
     from requests.adapters import HTTPAdapter
@@ -98,9 +103,26 @@ def _normalize_fits_bytes(buf: bytes) -> tuple[bytes, bool]:
         return buf, True
     return buf, False
 
-# -----------------------------------------------------------------------------
-# Public API (STScI-only; SkyView disabled)
-# -----------------------------------------------------------------------------
+# -----------------------------
+# Error artifact writer
+# -----------------------------
+def _write_error_artifacts(stem: str, *, content: bytes|None, content_type: str|None,
+                           reason: str, meta: dict) -> None:
+    ERRORS_ROOT.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).isoformat()
+    j = {
+        'when_utc': ts,
+        'reason': reason,
+        'content_type': content_type,
+        **meta,
+    }
+    (ERRORS_ROOT / f'{stem}.json').write_text(json.dumps(j, indent=2), encoding='utf-8')
+    if content:
+        (ERRORS_ROOT / f'{stem}.html').write_bytes(content)
+
+# -----------------------------
+# Public API (STScI-only; staged writes + late promotion)
+# -----------------------------
 
 def fetch_skyview_dss(
     ra_deg: float,
@@ -115,23 +137,19 @@ def fetch_skyview_dss(
     logger: logging.Logger | None = None
 ) -> Path:
     """
-    Fetch DSS imagery from **STScI only**. We retain the hidden 'v=poss1_red' knob
-    and add transactional writes, stricter sanity checks, and normalized naming.
+    Fetch DSS imagery from **STScI only** using a repo-local staging directory to avoid
+    creating tile folders on failures. Only promote to the final `out_dir` when:
+      - Response is a valid FITS (optionally gzipped),
+      - Minimal WCS keys are present,
+      - **POSS-I E** is confirmed (for `dss1-red` and `poss1-e`).
 
-    - Writes to a temporary file first; promotes to final name only when checks pass.
-    - Normalizes RA to [0,360) and clamps Dec to [-90,+90] for both request and name.
-    - Quantizes RA/Dec to 3 decimals in the filename to align with tile_id resolution.
-    - Logs standardized reason tokens on failures (REJECT_NON_FITS, REJECT_NON_WCS, etc.).
+    On failure, store artifacts under `./data/errors/` and raise RuntimeError.
     """
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     lg = logger or logging.getLogger('vasco.downloader')
 
-    # --- normalize inputs for request and naming ---
     def _norm_ra(x: float) -> float:
         r = float(x) % 360.0
         return r if r >= 0.0 else (r + 360.0)
-
     def _clamp_dec(x: float) -> float:
         d = float(x)
         return 90.0 if d > 90.0 else (-90.0 if d < -90.0 else d)
@@ -143,61 +161,76 @@ def fetch_skyview_dss(
     qra = f"{nra:.3f}"
     qdec = f"{ndec:.3f}"
     name = basename or f"{tag}_{qra}_{qdec}_{int(round(size_arcmin))}arcmin.fits"
-    final_path = out_dir / name
+    stem = Path(name).with_suffix('').name  # used for error artifact names
 
-    # Build STScI request (keeps your hidden 'v=poss1_red' override)
+    # Build STScI request
     url, params = _stscidss_params(nra, ndec, size_arcmin, survey, user_agent)
-    lg.info('[GET] STScI DSS RA=%.6f Dec=%.6f size=%.2f arcmin v=%s',
-            nra, ndec, size_arcmin, params.get('v'))
+    lg.info('[GET] STScI DSS RA=%.6f Dec=%.6f size=%.2f arcmin v=%s', nra, ndec, size_arcmin, params.get('v'))
+
+    # Repo-local staging
+    STAGING_ROOT.mkdir(parents=True, exist_ok=True)
+    stg = STAGING_ROOT / ('.tmp_' + name)
 
     # HTTP + FITS normalization
     content, ctype = _http_get(url, dict(params))
     data, ok = _normalize_fits_bytes(content)
     if not ok:
-        bad = final_path.with_suffix('.html')
-        bad.write_bytes(content)
-        lg.error('[REJECT_NON_FITS] Content-Type=%s bytes=%d -> %s', ctype, len(content), bad.name)
+        _write_error_artifacts(stem, content=content, content_type=ctype,
+                               reason='REJECT_NON_FITS',
+                               meta={'survey': SURVEY_ALIASES.get(survey.lower(), survey),
+                                     'ra_deg': nra, 'dec_deg': ndec, 'size_arcmin': float(size_arcmin)})
+        lg.error('[REJECT_NON_FITS] Content-Type=%s bytes=%d -> %s.html', ctype, len(content), stem)
         raise RuntimeError(f'STScI returned non-FITS: {ctype}')
 
-    # --- transactional write: temp -> validate -> promote ---
-    tmp = final_path.with_name('.tmp_' + final_path.name)
-    tmp.write_bytes(data)
+    # Stage the FITS bytes
+    stg.write_bytes(data)
 
-    # quick FITS sanity (minimal WCS keys + readable primary HDU)
+    # Minimal WCS sanity (primary HDU)
     try:
-        with fits.open(tmp, memmap=False) as hdul:
+        with fits.open(stg, memmap=False) as hdul:
             hdr = hdul[0].header if hdul and hdul[0].header else {}
-            # Minimal WCS sanity
-            for k in ('NAXIS1', 'NAXIS2', 'CRVAL1', 'CRVAL2'):
+            for k in ('NAXIS1','NAXIS2','CRVAL1','CRVAL2'):
                 if k not in hdr:
-                    lg.error('[REJECT_NON_WCS] Missing key %s in %s', k, tmp.name)
-                    tmp.unlink(missing_ok=True)
-                    raise RuntimeError('FITS missing minimal WCS keys')
-            survey_name = str(hdr.get('SURVEY', '')).upper()
+                    raise KeyError(k)
+            survey_name = str(hdr.get('SURVEY','')).upper()
     except Exception as e:
-        lg.error('[REJECT_FITS_OPEN] %s', e)
         try:
-            tmp.unlink(missing_ok=True)
+            stg.unlink(missing_ok=True)
         finally:
             pass
-        raise
+        _write_error_artifacts(stem, content=None, content_type='application/fits',
+                               reason='REJECT_NON_WCS',
+                               meta={'error': str(e), 'survey': SURVEY_ALIASES.get(survey.lower(), survey),
+                                     'ra_deg': nra, 'dec_deg': ndec, 'size_arcmin': float(size_arcmin)})
+        lg.error('[REJECT_NON_WCS] Missing minimal WCS keys or unreadable FITS: %s', e)
+        raise RuntimeError('FITS missing minimal WCS keys')
 
-    # strict POSS-I enforcement only when explicitly requested via 'poss1-e'
-    if survey.lower() == 'poss1-e':
-        if not (('POSS' in survey_name) or ('POSS-I' in survey_name) or ('POSS E' in survey_name) or ('POSS-E' in survey_name)):
+    # Strict POSS-I enforcement for dss1-red and poss1-e intents
+    if survey.lower() in ('poss1-e','dss1-red'):
+        if not (('POSS' in survey_name) or ('POSS-I' in survey_name) or ('POSS E' in survey_name) or ('POSS-E' in survey_name) or (survey_name == 'POSSI-E')):
+            try:
+                stg.unlink(missing_ok=True)
+            finally:
+                pass
+            _write_error_artifacts(stem, content=None, content_type='application/fits',
+                                   reason='REJECT_NON_POSS',
+                                   meta={'header_SURVEY': survey_name or 'UNKNOWN',
+                                         'survey': SURVEY_ALIASES.get(survey.lower(), survey),
+                                         'ra_deg': nra, 'dec_deg': ndec, 'size_arcmin': float(size_arcmin)})
             lg.error('[ENFORCE][REJECT_NON_POSS] SURVEY=%r (declination likely outside POSS coverage)', survey_name or 'UNKNOWN')
-            tmp.unlink(missing_ok=True)
             raise RuntimeError(f'Non-POSS plate returned by STScI: SURVEY={survey_name!r}')
 
-    # promote temp -> final
-    tmp.replace(final_path)
-    lg.info('[OK] wrote %s (%d bytes)', str(final_path), len(data))
+    # Promote staging -> final
+    out_dir = Path(out_dir)
+    final_path = out_dir / name
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    stg.replace(final_path)
+    lg.info('[OK] wrote %s (%d bytes)', str(final_path), final_path.stat().st_size)
     return final_path
 
-
-# -----------------------------------------------------------------------------
-# Batch fetch helpers (unchanged signatures; STScI-only inside)
-# -----------------------------------------------------------------------------
+# -----------------------------
+# Batch fetch helpers (STScI-only)
+# -----------------------------
 def fetch_many(rows: List[Tuple[float,float]], *, size_arcmin: float=60.0,
                survey: str='dss1-red', pixel_scale_arcsec: float=1.7,
                out_dir: Path | str='.', user_agent: str=_DEF_UA,
@@ -214,7 +247,6 @@ def fetch_many(rows: List[Tuple[float,float]], *, size_arcmin: float=60.0,
         except Exception as e:
             lg.error('[FAIL] RA=%.6f Dec=%.6f -> %s', ra, dec, e)
     return out
-
 
 def tessellate_centers(center_ra: float, center_dec: float, *,
                         width_arcmin: float, height_arcmin: float,
@@ -243,7 +275,6 @@ def tessellate_centers(center_ra: float, center_dec: float, *,
         if key not in seen: seen.add(key); uniq.append((ra,dc))
     return uniq
 
-
 def fetch_tessellated(center_ra: float, center_dec: float, *,
                        width_arcmin: float, height_arcmin: float,
                        tile_radius_arcmin: float=30.0, overlap_arcmin: float=0.0,
@@ -258,7 +289,6 @@ def fetch_tessellated(center_ra: float, center_dec: float, *,
                       user_agent=user_agent, logger=logger)
 
 # Backward-compat shim kept from earlier edits
-
 def get_image_service(service):
     if service.lower() == 'stsci':
         print('[INFO] Using STScI DSS endpoint for original pixel grid.')
