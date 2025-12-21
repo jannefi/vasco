@@ -47,7 +47,11 @@ VASCO aims to reproduce and extend the methodology of a recent astronomical stud
 
 ![Key Figures](./images/readme-key-figures-light.svg)
 
-*The above graphic summarises the previous status of my pipeline.*
+*The above graphic summarises the current status of my pipeline.*
+
+![Tile Coverage](./images/tiles_coverage_mollweide.png)
+
+*The above graphic shows the MOC plot of my tile coverage.*
 
 ---
 
