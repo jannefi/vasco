@@ -115,55 +115,51 @@ The main pipeline is run for each sky tile, typically in batches of hundreds or 
 
 ---
 
-## 2. Post-Pipeline: Aggregation & Analysis
+## Post-Pipeline: Aggregation & Analysis (Updated for Parquet-first Workflow)
 
-After processing a large number of tiles (e.g., 1,000+), run the following scripts to aggregate, filter, and compare results across the entire dataset.
+After processing all tiles, the pipeline now **skips creation of a monolithic master CSV** and instead writes deduplicated tile-level catalogs directly as partitioned Parquet files. This approach is highly memory-efficient and scales to hundreds of millions of detections.
 
 ---
 
-### Post-Pipeline Step 0: Per‑tile Astrometric Correction (Gaia tie)
+### Step 0: Per-tile Astrometric Correction (Gaia tie)
 - **Script:** `./scripts/fit_plate_solution.py --tiles-folder ./data/tiles`
 - **Purpose:** Fit a polynomial plate solution per tile using Gaia matches; write corrected coordinates to `final_catalog_wcsfix.csv`.
 - **Outputs:** `./data/tiles/<tileid>/final_catalog_wcsfix.csv`
-- **Downstream:** Post 1 (`filter_unmatched_all.py`) automatically prefers corrected RA/Dec; Post 2 (`summarize_runs.py`) reports `tiles_with_wcsfix`; Post 3 (`merge_tile_catalogs.py`) prefers corrected columns where present.
-
-### **Post-Pipeline Step 1: Filter Unmatched Sources**
-- **Script:**  
-  `./scripts/filter_unmatched_all.py --data-dir ./data --tol-cdss 0.05`
-- **Purpose:**  
-  For each tile, generates lists of unmatched sources for Gaia, PS1, and strict no-optical-counterpart lists.
-- **Output:**  
-  Per-tile CSVs in `xmatch/` (e.g., `sex_gaia_unmatched_cdss.csv`).
+- **Downstream:** Post 1 (`filter_unmatched_all.py`) prefers corrected RA/Dec; Post 2 (`summarize_runs.py`) reports `tiles_with_wcsfix`; Post 3 (`merge_tile_catalogs.py`) prefers corrected columns where present.
 
 ---
 
-### **Post-Pipeline Step 2: Summarise Runs**
-- **Script:**  
-  `./scripts/summarize_runs.py --data-dir ./data`
-- **Purpose:**  
-  Aggregates statistics across all tiles, producing Markdown and CSV summaries.
-- **Output:**  
-  `./data/run_summary.md`, `run_summary.csv`, `run_summary_tiles.csv`, `run_summary_tiles_counts.csv`
+### Step 1: Merge & Deduplicate Tile Catalogs (Parquet-first)
+- **Script:** `./scripts/merge_tile_catalogs.py --tiles-root ./data/tiles --tolerance-arcsec 0.5 --publish-parquet`
+- **Purpose:** Merge all per-tile SExtractor pass2 catalogs, deduplicate sources within a specified sky tolerance, and write results as partitioned Parquet files.
+- **Outputs:**
+  - **Per tile:** `./data/tiles/<tileid>/catalogs/parquet/ra_bin=XX/dec_bin=YY/part-tile.parquet`
+  - **Master Parquet dataset:** `./data/local-cats/_master_optical_parquet/ra_bin=XX/dec_bin=YY/part-<tileid>.parquet`
+- **Notes:**
+  - No master CSV is created; all downstream analysis uses Parquet.
+  - Progress is printed for each tile and every 100,000 rows written, so users can monitor script activity.
+  - Default partition bin size is 5 degrees (`--bin-deg 5`), changeable if needed.
 
 ---
 
-### **Post-Pipeline Step 3: Merge Tile Catalogues**
-- **Script:**  
-  `./scripts/merge_tile_catalogs.py --tiles-root ./data/tiles --tolerance-arcsec 0.5 --write-master`
-- **Purpose:**  
-  Merges all per-tile catalogues into a single, deduplicated master catalogue.
-- **Output:**  
-  `./data/tiles/_master_tile_catalog_pass2.csv` and related files.
+### Step 2: Filter Unmatched Sources
+- **Script:** `./scripts/filter_unmatched_all.py --data-dir ./data --tol-cdss 0.05`
+- **Purpose:** For each tile, generates lists of unmatched sources for Gaia, PS1, and strict no-optical-counterpart lists.
+- **Outputs:** Per-tile CSVs in `xmatch/` (e.g., `sex_gaia_unmatched_cdss.csv`).
+
 
 ---
 
-### **Post-Pipeline Step 4: Convert Master Catalogue to Parquet (Optional, Per-Catalogue)**
-- **Script:**  
-  `./scripts/make_master_optical_parquet.py --csv data/tiles/_master_tile_catalog_pass2.csv --out data/local-cats/_master_optical_parquet --bin-deg 5 --chunksize 500000`
-- **Purpose:**  
-  Converts the master CSV catalogue to a partitioned Parquet dataset for efficient analysis.
-- **Output:**  
-  Parquet files in `data/local-cats/_master_optical_parquet/`
+### Step 3: Summarise Runs
+- **Script:** `./scripts/summarize_runs.py --data-dir ./data`
+- **Purpose:** Aggregates statistics across all tiles, producing Markdown and CSV summaries.
+- **Outputs:** `./data/run_summary.md`, `run_summary.csv`, `run_summary_tiles.csv`, `run_summary_tiles_counts.csv`
+
+---
+
+### Step 4: Downstream Analysis (from Parquet)
+- All further analysis, matching, and reporting should use the partitioned Parquet dataset at `./data/local-cats/_master_optical_parquet/`.
+- If a CSV export is ever needed, it can be generated from Parquet using a utility script or Pandas/Arrow.
 
 ---
 
@@ -177,6 +173,15 @@ After processing a large number of tiles (e.g., 1,000+), run the following scrip
 
 ---
 
+### Best Practices & Notes
+- **Memory efficiency:** The pipeline never loads all detections into RAM at once; each tile is processed independently and written incrementally.
+- **Scalability:** Parquet partitions allow efficient querying, filtering, and joining for very large datasets.
+- **Monitoring:** The merge script prints regular progress updates, so users can be confident the process is running.
+- **CSV fallback:** If a master CSV is ever required, it can be generated from the Parquet dataset for a selected region or subset.
+
+---
+
+
 ## 3. Typical Workflow Summary
 
 | Step | Script/Command | Purpose | Key Output(s) | Optional? |
@@ -185,8 +190,8 @@ After processing a large number of tiles (e.g., 1,000+), run the following scrip
 | Post 0 | `fit_plate_solution.py` | Per-tile astrometric correction (Gaia) | Match/Unmatched CSVs | No |
 | Post 1 | `filter_unmatched_all.py` | Per-tile unmatched lists | Unmatched CSVs | No |
 | Post 2 | `summarize_runs.py` | Aggregate run summary | Markdown/CSV summaries | No |
-| Post 3 | `merge_tile_catalogs.py` | Merge/dedupe all tile catalogues | Master CSVs | No |
-| Post 4 | `make_master_optical_parquet.py` | Convert master CSV to Parquet | Parquet dataset | Yes |
+| Post 3 | `merge_tile_catalogs.py` | Merge/dedupe all tile catalogues | Master parquet | No |
+| Post 4 | `make_master_optical_parquet.py` | Not required! Convert master CSV to Parquet | Parquet dataset | Yes |
 | Post 5 | `compare_vasco_vs_optical.py` | Compare science catalogue to optical | Match/unmatched CSVs | Yes |
 
 ---

@@ -56,12 +56,12 @@ fi
   python ./scripts/summarize_runs.py --data-dir "$DATA_DIR"
 
   echo "[INFO] 3/5 merge_tile_catalogs.py (tolerance 0.5 arcsec)"
-  python ./scripts/merge_tile_catalogs.py --tiles-root "$TILES_ROOT" --tolerance-arcsec 0.5 --write-master
+  python ./scripts/merge_tile_catalogs.py --tiles-root ./data/tiles --tolerance-arcsec 0.5 --publish-parquet --overwrite
 
-  echo "[INFO] 4/5 Convert large csv file to parquet format"
-  python ./scripts/make_master_optical_parquet.py --csv data/tiles/_master_tile_catalog_pass2.csv --out data/local-cats/_master_optical_parquet --bin-deg 5 --chunksize 500000
-  echo "[INFO] 5/5 compare_vasco_vs_optical.py"
-  python ./scripts/compare_vasco_vs_optical.py --vasco "$VASCO_CSV" --radius-arcsec 2.0 --bin-deg 5 --chunk-size 20000 --out-dir data/local-cats/out/v3_match --write-chunks
+  echo "[INFO] 4/5 Convert large csv file to parquet format (redundant with previous step) - skipped"
+  # python ./scripts/make_master_optical_parquet.py --csv data/tiles/_master_tile_catalog_pass2.csv --out data/local-cats/_master_optical_parquet --bin-deg 5 --chunksize 500000
+  echo "[INFO] 5/5 compare_vasco_vs_optical.py - optional, skipped for now"
+  #python ./scripts/compare_vasco_vs_optical.py --vasco "$VASCO_CSV" --radius-arcsec 2.0 --bin-deg 5 --chunk-size 20000 --out-dir data/local-cats/out/v3_match --write-chunks
  
 } 2>&1 | tee "$LOG_DIR/vasco_neowise_compare_$(date +%Y%m%d_%H%M%S).log"
 
