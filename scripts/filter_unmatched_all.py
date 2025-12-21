@@ -173,6 +173,28 @@ def process_tile(tile_dir: Path, tol_cdss: float, positional: bool, dry: bool) -
     xmatch = tile_dir / 'xmatch'
     if not (catalogs.exists() and xmatch.exists()):
         return 0
+    
+    # List of expected outputs for this tile
+    expected = [
+        xmatch / 'gaia_ids.csv',
+        xmatch / 'ps1_ids.csv',
+        xmatch / 'matched_any_ids.csv',
+        xmatch / 'matched_any_ids_unique.csv',
+        xmatch / 'sex_gaia_unmatched_cdss.csv',
+        xmatch / 'sex_ps1_unmatched_cdss.csv',
+        xmatch / 'no_optical_counterparts.csv',
+    ]
+    # Optionally add positional outputs if enabled
+    if positional:
+        expected += [
+            xmatch / 'sex_gaia_unmatched_cdss_pos.csv',
+            xmatch / 'sex_ps1_unmatched_cdss_pos.csv',
+        ]
+    # If all outputs exist, skip this tile
+    if all(p.exists() for p in expected):
+        print(f"[SKIP] {tile_dir.name}: all outputs present, skipping.")
+        return 0
+
     det_csv, ra1_col, dec1_col = pick_detection_catalog(tile_dir)
     if not det_csv.exists():
         return 0
