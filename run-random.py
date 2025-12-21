@@ -6,7 +6,8 @@ VASCO runner — modes:
  2) steps — sweep tiles and run requested steps (2..6) where missing
  3) download_from_tiles — scan existing tile folders under data/tiles and invoke step1-download per tile
 
-Fix: --force now overrides --only-missing. Also added --no-only-missing to explicitly process all tiles without deleting them.
+This version avoids creating tile folders during step1 failures by relying on the downloader's
+repo-local staging and late promotion semantics.
 """
 import os, sys, json, random, logging, time, argparse
 from pathlib import Path
@@ -31,10 +32,8 @@ log = logging.getLogger("vasco_random_run")
 REPO_ROOT = Path(__file__).resolve().parent
 BASE_ENV = os.environ.copy(); BASE_ENV['PYTHONPATH'] = str(REPO_ROOT)
 
-
-# --- tiles registry helpers ---------------------------------------------------
+# --- tiles registry helpers ---
 import csv
-
 REGISTRY_PATH = Path("./data/metadata/tiles_registry.csv")
 REGISTRY_FIELDS = (
     "tile_id", "ra_deg", "dec_deg", "survey", "size_arcmin", "pixel_scale_arcsec",
@@ -46,15 +45,10 @@ def _ensure_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 def load_seen_from_registry(csv_path: Path, key_fields=REGISTRY_KEY_FIELDS) -> set[tuple]:
-    """
-    Build a set of dedup keys already present in the registry.
-    Safe to call even if the file doesn't exist yet.
-    """
     seen = set()
     if csv_path.exists() and csv_path.stat().st_size > 0:
         with csv_path.open("r", newline="", encoding="utf-8") as f:
             r = csv.DictReader(f)
-            # tolerate missing columns gracefully
             has_all = all(k in r.fieldnames for k in key_fields)
             if has_all:
                 for row in r:
@@ -62,24 +56,16 @@ def load_seen_from_registry(csv_path: Path, key_fields=REGISTRY_KEY_FIELDS) -> s
     return seen
 
 class _FileLock:
-    """
-    Simple cross-platform file lock via an exclusive .lock file (O_CREAT|O_EXCL).
-    - Creates <csv>.lock exclusively. If it already exists, we wait until it disappears.
-    - No external packages; works on POSIX and Windows.
-    """
     def __init__(self, target_csv: Path, timeout_ms: int = 5000, poll_ms: int = 50):
         self.lock_path = target_csv.with_suffix(target_csv.suffix + ".lock")
         self.timeout_ms = timeout_ms
         self.poll_ms = poll_ms
-
     def __enter__(self):
         _ensure_dir(self.lock_path)
         start = time.time()
         while True:
             try:
-                # Exclusive create; fails if lock file already exists.
                 fd = os.open(self.lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-                # write pid for visibility; not required for locking
                 os.write(fd, str(os.getpid()).encode("utf-8"))
                 os.close(fd)
                 return self
@@ -87,7 +73,6 @@ class _FileLock:
                 if (time.time() - start) * 1000 > self.timeout_ms:
                     raise TimeoutError(f"Timeout acquiring lock: {self.lock_path}")
                 time.sleep(self.poll_ms / 1000.0)
-
     def __exit__(self, exc_type, exc, tb):
         try:
             os.unlink(self.lock_path)
@@ -99,13 +84,6 @@ def append_row_to_registry(
     row: dict,
     fieldnames: tuple[str, ...] = REGISTRY_FIELDS,
 ) -> None:
-    """
-    Append a single row to the registry file atomically:
-    - Acquire exclusive lock.
-    - Create the file and write header if it doesn't exist yet or is empty.
-    - Append the row; flush + fsync.
-    - Release lock.
-    """
     _ensure_dir(csv_path)
     with _FileLock(csv_path):
         new_file = (not csv_path.exists()) or (csv_path.stat().st_size == 0)
@@ -114,9 +92,7 @@ def append_row_to_registry(
             if new_file:
                 w.writeheader()
             w.writerow(row)
-            f.flush()
-            os.fsync(f.fileno())
-
+            f.flush(); os.fsync(f.fileno())
 
 # helpers
 
@@ -141,46 +117,31 @@ def run_and_stream(cmd: list[str]) -> int:
     proc.wait(); return proc.returncode
 
 def has_raw_fits(tile_dir: Path) -> bool:
-    return any(tile_dir.joinpath('raw').glob('*.fits'))
+    return any((tile_dir/'raw').glob('*.fits'))
 
 # commands
 
-
 def cmd_download_loop(args: argparse.Namespace) -> int:
     log.info("Starting download loop — CTRL+C to stop.")
-    seen = load_seen_from_registry(REGISTRY_PATH)  # O(tiles) once
-    # optional: prime folder existence if you want a fast guardrail
-    # existing_dirs = {p.name for p in Path(WORKDIR_ROOT).glob("tile-RA*-DEC*") if p.is_dir()}
-
+    seen = load_seen_from_registry(REGISTRY_PATH)
     try:
         while True:
             ra = random.uniform(RA_MIN, RA_MAX)
             dec = random.uniform(DEC_MIN, DEC_MAX)
-            tid = tile_id_from_coords(ra, dec)  # existing helper
-
+            tid = tile_id_from_coords(ra, dec)
             size = float(args.size_arcmin or TILE_SIZE_ARCMIN)
-            px   = float(args.pixel_scale_arcsec or PIXEL_SCALE)
+            px = float(args.pixel_scale_arcsec or PIXEL_SCALE)
             survey = args.survey or SURVEY
             key = (tid, survey, str(size), str(px))
-
             workdir_tile = os.path.join(WORKDIR_ROOT, tid)
-            Path(workdir_tile).mkdir(parents=True, exist_ok=True)
 
-            # --- EARLY SKIP using registry ---
+            # EARLY SKIP using registry
             if key in seen:
                 log.info(f"[SKIP] {tid} — seen in registry for {survey}/{size}/{px}")
                 time.sleep(float(args.sleep_sec or 15))
                 continue
 
-            # --- GUARDRAIL SKIP using filesystem (handles registry drift) ---
-            if has_raw_fits(Path(workdir_tile)):
-                log.info(f"[SKIP] {tid} — raw FITS already present in folder")
-                # Optional: backfill into registry so future skips happen even earlier
-                # seen.add(key)
-                time.sleep(float(args.sleep_sec or 15))
-                continue
-
-            # Step 1 command build (unchanged)
+            # Step 1 command build (no upfront mkdir)
             cmd = [
                 "python","-u","-m","vasco.cli_pipeline","step1-download",
                 "--ra", str(ra), "--dec", str(dec),
@@ -210,16 +171,14 @@ def cmd_download_loop(args: argparse.Namespace) -> int:
                     }
                     try:
                         append_row_to_registry(REGISTRY_PATH, row)
-                        seen.add(key)  # keep in-memory set up-to-date
+                        seen.add(key)
                         log.info(f"[LEDGER] appended {tid} to tiles_registry.csv")
                     except Exception as e:
                         log.warning(f"[LEDGER] append failed for {tid}: {e}")
-
             time.sleep(float(args.sleep_sec or 15))
     except KeyboardInterrupt:
         log.info("Interrupted by user. Exiting download loop.")
-    return 0
-
+        return 0
 
 
 def cmd_steps(args: argparse.Namespace) -> int:
@@ -249,14 +208,14 @@ def cmd_steps(args: argparse.Namespace) -> int:
                 if not (tile_dir / 'pass1.ldac').exists() or (tile_dir / 'pass2.ldac').exists(): continue
                 cmd = ["python","-u","-m","vasco.cli_pipeline","step3-psf-and-pass2","--workdir",str(tile_dir)]
             elif step == 'step4-xmatch':
-                if not (tile_dir / 'pass2.ldac').exists() or (tile_dir / 'xmatch').exists() and (any((tile_dir / 'xmatch').glob('sex_*_xmatch.csv')) or any((tile_dir / 'xmatch').glob('sex_*_xmatch_cdss.csv'))): continue
+                if not (tile_dir / 'pass2.ldac').exists() or ((tile_dir / 'xmatch').exists() and (any((tile_dir / 'xmatch').glob('sex_*_xmatch.csv')) or any((tile_dir / 'xmatch').glob('sex_*_xmatch_cdss.csv')))): continue
                 cmd = ["python","-u","-m","vasco.cli_pipeline","step4-xmatch","--workdir",str(tile_dir),
                        "--xmatch-backend",args.xmatch_backend or 'cds',
                        "--xmatch-radius-arcsec",str(args.xmatch_radius or 5.0),
                        "--size-arcmin",str(args.size_arcmin or TILE_SIZE_ARCMIN)]
                 if (args.xmatch_backend or 'cds') == 'cds':
                     if args.cds_gaia_table: cmd += ["--cds-gaia-table", args.cds_gaia_table]
-                    if args.cds_ps1_table:  cmd += ["--cds-ps1-table",  args.cds_ps1_table]
+                    if args.cds_ps1_table: cmd += ["--cds-ps1-table", args.cds_ps1_table]
             elif step == 'step5-filter-within5':
                 xdir = tile_dir / 'xmatch'
                 if not xdir.exists() or any(xdir.glob('*_within5arcsec.csv')): continue
@@ -290,15 +249,12 @@ def cmd_download_from_tiles(args: argparse.Namespace) -> int:
         if not parsed:
             log.warning("Skipping folder with unexpected name: %s", tile_dir.name); continue
         ra, dec = parsed
-        raw_dir = tile_dir / 'raw'; raw_dir.mkdir(parents=True, exist_ok=True)
+        raw_dir = tile_dir / 'raw'
         # decide whether to process
         if args.force:
-            # force: remove existing FITS + header sidecars and proceed
             for f in list(raw_dir.glob('*.fits*')) + list(raw_dir.glob('*.fits.header.json')):
-                try:
-                    f.unlink()
-                except Exception:
-                    pass
+                try: f.unlink()
+                except Exception: pass
             log.info("[CLEAN] Removed existing FITS+sidecars in %s", tile_dir.name)
         elif args.only_missing and has_raw_fits(tile_dir):
             log.info("[SKIP] %s — raw FITS present; --only-missing", tile_dir.name)
@@ -326,37 +282,10 @@ def cmd_download_from_tiles(args: argparse.Namespace) -> int:
     log.info("[DONE] Tiles planned=%d, attempted=%d, downloaded=%d", planned, attempted, downloaded)
     return 0
 
-
-# --- add near other helpers ---
-def cmd_inspect(args: argparse.Namespace) -> int:
-    """Single-shot Step 1 download at a specified RA/Dec (inspection tile)."""
-    ra = float(args.ra); dec = float(args.dec)
-    tid = tile_id_from_coords(ra, dec)
-    workdir_tile = os.path.join(args.workdir_root or WORKDIR_ROOT, tid)
-    os.makedirs(workdir_tile, exist_ok=True)
-    log.info(f"[INSPECT] RA={ra:.6f}, Dec={dec:.6f} -> {tid}")
-
-    cmd = [
-        "python","-u","-m","vasco.cli_pipeline","step1-download",
-        "--ra", str(ra),
-        "--dec", str(dec),
-        "--size-arcmin", str(args.size_arcmin or TILE_SIZE_ARCMIN),
-        "--survey", args.survey or SURVEY,
-        "--pixel-scale-arcsec", str(args.pixel_scale_arcsec or PIXEL_SCALE),
-        "--workdir", workdir_tile,
-    ]
-    rc = run_and_stream(cmd)
-    if rc != 0:
-        log.warning(f"Step1 failed for {tid} (rc={rc}).")
-        return rc
-    log.info(f"[OK] Inspect tile ready: {workdir_tile}")
-    return 0
-
-
 # argparse
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description='VASCO runner: download loop, step sweeper, and batch re-download from tile folders')
+    ap = argparse.ArgumentParser(description='VASCO runner: download loop, step sweeper, and batch re-download from tile folders (staging-aware)')
     sub = ap.add_subparsers(dest='cmd')
 
     dl = sub.add_parser('download_loop', help='Continuously download tiles (step1) until interrupted')
@@ -364,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
     dl.add_argument('--size-arcmin', type=float, default=TILE_SIZE_ARCMIN)
     dl.add_argument('--survey', default=SURVEY)
     dl.add_argument('--pixel-scale-arcsec', dest='pixel_scale_arcsec', type=float, default=PIXEL_SCALE)
-    dl.add_argument('--pixel-scale',       dest='pixel_scale_arcsec', type=float, default=PIXEL_SCALE)
+    dl.add_argument('--pixel-scale', dest='pixel_scale_arcsec', type=float, default=PIXEL_SCALE)
     dl.set_defaults(func=cmd_download_loop)
 
     st = sub.add_parser('steps', help='Scan tiles and run requested steps where missing')
@@ -375,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument('--xmatch-backend', choices=['local','cds'], default='cds')
     st.add_argument('--xmatch-radius', type=float, default=5.0)
     st.add_argument('--cds-gaia-table', default=os.getenv('VASCO_CDS_GAIA_TABLE'))
-    st.add_argument('--cds-ps1-table',  default=os.getenv('VASCO_CDS_PS1_TABLE'))
+    st.add_argument('--cds-ps1-table', default=os.getenv('VASCO_CDS_PS1_TABLE'))
     st.add_argument('--export', choices=['none','csv','parquet','both'], default='csv')
     st.add_argument('--hist-col', default='FWHM_IMAGE')
     st.set_defaults(func=cmd_steps)
@@ -389,22 +318,27 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument('--size-arcmin', type=float, default=TILE_SIZE_ARCMIN)
     bt.add_argument('--survey', default=SURVEY)
     bt.add_argument('--pixel-scale-arcsec', dest='pixel_scale_arcsec', type=float, default=PIXEL_SCALE)
-    bt.add_argument('--pixel-scale',       dest='pixel_scale_arcsec', type=float, default=PIXEL_SCALE)
+    bt.add_argument('--pixel-scale', dest='pixel_scale_arcsec', type=float, default=PIXEL_SCALE)
     bt.add_argument('--sleep-sec', type=float, default=0)
     bt.add_argument('--limit', type=int, default=0)
     bt.set_defaults(func=cmd_download_from_tiles)
-
 
     ins = sub.add_parser('inspect', help='One-off Step 1 download at given RA/Dec')
     ins.add_argument('--ra', required=True, type=float)
     ins.add_argument('--dec', required=True, type=float)
     ins.add_argument('--workdir-root', default=WORKDIR_ROOT)
-    ins.add_argument('--size-arcmin', type=float, default=10.0)     # default 10′ for inspection
-    ins.add_argument('--survey', default=SURVEY)                     # dss1-red
+    ins.add_argument('--size-arcmin', type=float, default=10.0) # default 10′ for inspection
+    ins.add_argument('--survey', default=SURVEY) # dss1-red
     ins.add_argument('--pixel-scale-arcsec', dest='pixel_scale_arcsec', type=float, default=PIXEL_SCALE)
     ins.add_argument('--pixel-scale', dest='pixel_scale_arcsec', type=float, default=PIXEL_SCALE)
-    ins.set_defaults(func=cmd_inspect)
-
+    ins.set_defaults(func=lambda a: run_and_stream([
+        "python","-u","-m","vasco.cli_pipeline","step1-download",
+        "--ra", str(a.ra), "--dec", str(a.dec),
+        "--size-arcmin", str(a.size_arcmin),
+        "--survey", a.survey,
+        "--pixel-scale-arcsec", str(a.pixel_scale_arcsec),
+        "--workdir", str(Path(a.workdir_root) / tile_id_from_coords(a.ra, a.dec))
+    ]))
 
     args = ap.parse_args(argv)
     if hasattr(args, 'func'): return args.func(args)
