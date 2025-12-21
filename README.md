@@ -63,6 +63,22 @@ VASCO aims to reproduce and extend the methodology of a recent astronomical stud
 
 For a detailed workflow, see [WORKFLOW.md](WORKFLOW.md).
 
+
+## Note on Duplicate Sources from Tile Overlap
+
+Because tiles are selected at random and may overlap at their edges, it is possible for the same astronomical source to appear in multiple tiles. The pipeline performs deduplication **within each tile** (removing duplicate detections inside a single tile), but **does not remove duplicates across different tiles** by default.
+
+As a result, the master Parquet dataset and any cross-tile summaries may contain multiple entries for the same source if it falls within overlapping regions of two or more tiles. This is expected behaviour for large-scale random tiling and does not affect most statistical analyses.
+
+If a catalogue of unique sources (with all cross-tile duplicates removed) is required, a global deduplication step can be performed after merging, using a positional tolerance (e.g., 0.5 arcsec) across all tiles. This is not enabled by default, but can be added as a post-processing step if needed.
+
+**Summary:**
+- Deduplication is performed within each tile only.
+- Cross-tile duplicates are not removed by default.
+- Downstream analyses and summaries may slightly over-count sources in overlapping regions.
+- Global deduplication can be added if a unique-source catalogue is required.
+
+
 ---
 
 ## Quick Start
@@ -300,13 +316,9 @@ The bash script executes these commands:
 python ./scripts/fit_plate_solution.py --tiles-folder ./data/tiles
 python ./scripts/filter_unmatched_all.py --data-dir ./data
 python ./scripts/summarize_runs.py --data-dir data
-python ./scripts/merge_tile_catalogs.py --tiles-root ./data/tiles --tolerance-arcsec 0.5
+python ./scripts/merge_tile_catalogs.py --tiles-root ./data/tiles --tolerance-arcsec 0.5     --publish-parquet --overwrite
 
-# Convert large csv into Parquet
-python ./scripts/make_master_optical_parquet.py --csv data/tiles/_master_tile_catalog_pass2.csv \
-  --out data/local-cats/_master_optical_parquet --bin-deg 5 --chunksize 500000
-
-# Compare vasco dataset against optical (parquet)
+# Optional: compare vasco dataset against optical (parquet) 
 python scripts/compare_vasco_vs_optical.py --vasco data/vasco-cats/vanish_neowise_1765546031.csv \
   --radius-arcsec 2.0 --bin-deg 5 --chunk-size 20000 --out-dir data/local-cats/out/v3_match
 ```
