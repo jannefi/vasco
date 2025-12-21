@@ -302,6 +302,15 @@ python scripts/cleanup_non_possi_tiles.py --mode all --apply
 
 Docker might terminate your script without much warnings or other messages than "Killed". Usually that means the script is using too much memory. Docker has a default memory limit of 4-8GB. Increase it to 16. You might want to consider increasing the CPU, swap size and disk usage limits, too.
 
+### SExtractor diagnostic files
+
+Soure extractor may leave some undocumented diagnostic files on your disk depending on the sw version and environment. These files are not needed by the pipeline. They use a lot of diskspace, and can be safely deleted.
+
+I made a small bash script ``clean_checkimages.sh`` which you can find under the scripts folder. 
+The script performs a search for the following filenames: ``resi_pass1.fits``, ``chi_pass1.fits`` and ``samp_pass1.fits`` under ./data/tiles. As a precaution, it doesn't delete the files, but it tells you how to do that. I didn't want to delete them automatically, because I cannot be sure if these files are created in every instance of the pipeline (local or dockerized).
+
+Note that these files will be always created during pipeline step 2 (during SExtractor pass 2). I couldn't figure out why the files are created, but apparently source-extractor needs them. There's absolutely no documentation about this behavior. You will not find these filenames via Google search for example. 
+
 ## Final Steps & Advanced Commands
 
 After all steps have completed for all tiles, copy vanish_neowise_nnnn.csv via http://svocats.cab.inta-csic.es/vanish-neowise/index.php?action=search to data/vasco-svo/ folder.
