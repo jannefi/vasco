@@ -315,6 +315,25 @@ The script performs a search for the following filenames: ``resi_pass1.fits``, `
 
 Note that these files will be always created during pipeline step 2 (during SExtractor pass 2). I couldn't figure out why the files are created, but apparently source-extractor needs them. There's absolutely no documentation about this behavior. You will not find these filenames via Google search for example. 
 
+### SExtractor finds no sources from a tile
+
+Occasionally your script will hit a tile that has zero sources. This doesn't affect the pipeline or any statistics. This is normal and expected behavior. If you want to check tiles that have 0 sources, run this command: ``find ./data/tiles/ -name 'sextractor_pass2.csv' -exec awk 'NR==2{exit 1}' {} \; -print`` It will print out possible tiles that have zero sources. You can visually inspect the image, that is under the ./raw folder of the tile. If it looks very dim, fuzzy or foggy, but still contains a valid fits header, your software has just hit some POSS-I red tile that are not very useful. Example full tile names I have found:
+- dss1red_XE691.fits
+- dss1red_XE923.fits
+
+If you have downloaded full POSS-I red tiles, inspecting these full plate scans visually shows that they probably won't yield any sources. It's good to know that such tiles may appear in your dataset, but they are harmless and won't affect any analysis or statistics. 
+
+One website that contains all POSS-I full plate scans: https://irsa.ipac.caltech.edu/data/DSS/images/dss1red/
+
+### Visual inspection of fits image files
+
+There are several apps you can use to view fits file images. Examples:
+- Aladin Sky Atlas (preferred): https://aladin.cds.unistra.fr/
+- DS9 https://sites.google.com/cfa.harvard.edu/saoimageds9
+- Siril https://siril.org/ 
+
+This is just a small subset of available apps.
+
 ## Final Steps & Advanced Commands
 
 After all steps have completed for all tiles, copy vanish_neowise_nnnn.csv via http://svocats.cab.inta-csic.es/vanish-neowise/index.php?action=search to data/vasco-svo/ folder.
