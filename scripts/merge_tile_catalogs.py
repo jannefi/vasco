@@ -111,12 +111,22 @@ def merge_one_tile(tile_path: Path, tol_arcsec: float, overwrite: bool, publish_
     frames = []
     for f in files:
         df = pd.read_csv(f)
+        if df.empty or len(df) == 0:
+            print(f"[SKIP] {f}: empty catalog (header only)")
+            continue
         ra_col, dec_col = find_coord_columns(df)
         df["tile_id"] = tile_path.name
         df["image_catalog_path"] = str(f.relative_to(tile_path))
         df["image_id"] = f.parent.name if f.parent.name != "catalogs" else tile_path.name
         frames.append(df)
+    
+    if not frames:
+        print(f"[SKIP] Tile {tile_path.name}: all catalogs empty")
+        return 0
     raw = pd.concat(frames, ignore_index=True)
+    if raw.empty or len(raw) == 0:
+        print(f"[SKIP] Tile {tile_path.name}: concatenated catalog is empty")
+        return 0
     ra_col, dec_col = find_coord_columns(raw)
     deduped = dedupe_by_cells(raw, ra_col, dec_col, tol_arcsec)
     deduped = add_bins(deduped, ra_col, dec_col, bin_deg)
