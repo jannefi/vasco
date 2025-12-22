@@ -334,6 +334,25 @@ There are several apps you can use to view fits file images. Examples:
 
 This is just a small subset of available apps.
 
+### A downstream script crashes due to a Parquet error
+
+If your downstream scripts starts to crash due to a Parquet related problem, it's probably good time to delete few files and re-create them with the improved ``merge_tile_catalogs.py`` script. Here's how:
+```bash
+# tile-local parquet under each tile
+find ./data/tiles -type d -name parquet -prune -exec rm -rf {} +
+
+# master parquet dataset 
+rm -rf ./data/local-cats/_master_optical_parquet
+
+# recreate all parquet datasets
+python ./scripts/merge_tile_catalogs.py \
+  --tiles-root ./data/tiles \
+  --tolerance-arcsec 0.5 \
+  --publish-parquet \
+  --bin-deg 5
+```
+After this your Parquet datasets should be OK. 
+
 ## Final Steps & Advanced Commands
 
 After all steps have completed for all tiles, copy vanish_neowise_nnnn.csv via http://svocats.cab.inta-csic.es/vanish-neowise/index.php?action=search to data/vasco-svo/ folder.
