@@ -115,23 +115,41 @@ def add_bins(df: pd.DataFrame, ra_col: str, dec_col: str, bin_deg: float) -> pd.
     return df
 
 
+
+def _ensure_dir_is_directory(p: Path):
+    """Ensure p exists as a directory; if a file/symlink is at p, raise."""
+    if p.exists():
+        if not p.is_dir():
+            raise RuntimeError(f"Expected directory, found non-dir at: {p}")
+    else:
+        os.makedirs(str(p), exist_ok=True)
+
 def write_partition(root: Path, ra_bin: int, dec_bin: int, df_part: pd.DataFrame, tag: str) -> Path:
     """Write one partition file under ra_bin=XX/dec_bin=YY/part-<tag>.parquet."""
-    part_dir = root / f"ra_bin={ra_bin}" / f"dec_bin={dec_bin}"
-    part_dir.mkdir(parents=True, exist_ok=True)
+    # Make all paths absolute to avoid CWD surprises
+    root_abs = Path(root).resolve()
+    part_dir = root_abs / f"ra_bin={ra_bin}" / f"dec_bin={dec_bin}"
+
+    # Ensure parents are proper directories; create with os.makedirs
+    _ensure_dir_is_directory(root_abs)
+    _ensure_dir_is_directory(root_abs / f"ra_bin={ra_bin}")
+    _ensure_dir_is_directory(part_dir)
+
     file_path = part_dir / f"part-{tag}.parquet"
 
     # Final defensive enforcement (keeps future edits safe)
     df_part = _enforce_schema(df_part)
     table = pa.Table.from_pandas(df_part, preserve_index=False)
 
+    # Write with a retry that re-checks dirs
     try:
         pq.write_table(table, str(file_path), compression="zstd", use_dictionary=True)
     except FileNotFoundError:
-        # Defensive: ensure directory exists, then retry once
-        part_dir.mkdir(parents=True, exist_ok=True)
+        # Recreate directories and retry once
+        _ensure_dir_is_directory(part_dir)
         pq.write_table(table, str(file_path), compression="zstd", use_dictionary=True)
     return file_path
+
 
 
 def iter_catalog_files(catalogs_root: Path):
@@ -207,9 +225,10 @@ def merge_one_tile(tile_path: Path, tol_arcsec: float, overwrite: bool,
     deduped = _enforce_schema(deduped)
 
     # Write tile-local parquet partitions
-    tile_parquet_root = catalogs_root / "parquet"
-    tile_parquet_root.mkdir(parents=True, exist_ok=True)
-
+    
+    tile_parquet_root = (catalogs_root / "parquet").resolve()
+    _ensure_dir_is_directory(tile_parquet_root)
+    
     count = 0
     for (rb, db), sub in deduped.groupby(["ra_bin", "dec_bin"], sort=False):
         if sub.empty:
