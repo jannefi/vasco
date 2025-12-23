@@ -11,7 +11,7 @@ repo-local staging and late promotion semantics.
 """
 import os, sys, json, random, logging, time, argparse
 from pathlib import Path
-from subprocess import Popen, PIPE
+from subprocess import Popen, PIPE, STDOUT
 
 WORKDIR_ROOT = "data/tiles"
 SURVEY = "dss1-red"
@@ -40,6 +40,20 @@ REGISTRY_FIELDS = (
     "status", "downloaded_utc", "source", "notes"
 )
 REGISTRY_KEY_FIELDS = ("tile_id", "survey", "size_arcmin", "pixel_scale_arcsec")
+
+
+def _needs_step5(xdir: Path) -> bool:
+    # Source patterns match the CLI (see cli_pipeline.py)
+    sources = sorted(list(xdir.glob('sex_*_xmatch.csv')) + list(xdir.glob('sex_*_xmatch_cdss.csv')))
+    if not sources:
+        # returning False will skip quietly. Choose one behavior:
+        return True  # or False if you want to skip silently when there are no sources
+    for src in sources:
+        dst = src.with_name(src.stem + '_within5arcsec.csv')
+        if not dst.exists():
+            return True
+    return False
+
 
 def _ensure_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -111,10 +125,12 @@ def parse_ra_dec_from_tile(dirname: str):
 
 def run_and_stream(cmd: list[str]) -> int:
     log.info(f"Running: {' '.join(cmd)}")
-    proc = Popen(cmd, stdout=PIPE, stderr=PIPE, text=True, bufsize=1, env=BASE_ENV)
-    for line in proc.stdout: sys.stdout.write(line)
-    for line in proc.stderr: sys.stderr.write(line)
-    proc.wait(); return proc.returncode
+    proc = Popen(cmd, stdout=PIPE, stderr=STDOUT, text=True, bufsize=1, env=BASE_ENV)
+    for line in proc.stdout:
+        sys.stdout.write(line)
+    proc.wait()
+    return proc.returncode
+
 
 def has_raw_fits(tile_dir: Path) -> bool:
     return any((tile_dir/'raw').glob('*.fits'))
@@ -218,7 +234,8 @@ def cmd_steps(args: argparse.Namespace) -> int:
                     if args.cds_ps1_table: cmd += ["--cds-ps1-table", args.cds_ps1_table]
             elif step == 'step5-filter-within5':
                 xdir = tile_dir / 'xmatch'
-                if not xdir.exists() or any(xdir.glob('*_within5arcsec.csv')): continue
+                if not xdir.exists() or not _needs_step5(xdir):
+                    continue
                 cmd = ["python","-u","-m","vasco.cli_pipeline","step5-filter-within5","--workdir",str(tile_dir)]
             elif step == 'step6-summarize':
                 if not (tile_dir / 'pass2.ldac').exists() or (tile_dir / 'RUN_SUMMARY.md').exists(): continue
