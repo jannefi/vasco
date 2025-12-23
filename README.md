@@ -405,6 +405,22 @@ NeoWISE filtering will be implemented when time permits. NeoWISE will filter out
 
 ## Recent Improvements
 
+### MNRAS 2022 filters taken into use 23-Dec-2025
+
+The following MNRAS 2022 filters are now wired in: 
+- Pre‑xmatch filtering (FLAGS==0, SNR_WIN>30) and FWHM/elongation/SPREAD_MODEL
+- Bright‑star/diffraction spike removal
+- Gaia high‑proper‑motion check 
+
+Each tile/run writes MNRAS_SUMMARY.md and json file. 
+
+If you have collected and ran data through pipeline steps 2-6, you should run a new batch script across all data. `scripts/batch_mnras_reprocess.py` and after that has completed, run all post-processing steps. 
+
+`batch_mnras_reprocess.py` runs in parallel mode, default is 4 workers. If your CPU can handle more, increase N_PARALLEL e.g.
+`N_PARALLEL=8 python scripts/batch_mnras_reprocess.py`
+
+If the batch run is interrupted, the script can be restarted safely. It won't touch already handled tiles. 
+
 ### Gaia xmatch column names
 
 Some post-processing scripts expect Gaia cross-match columns to be named `RA_ICRS`/`DE_ICRS`, `RAJ2000`/`DEJ2000`, or `RA`/`DEC`. If you encounter warnings about missing RA/Dec columns, check if your CSVs use lowercase `ra`/`dec` and update the script to recognise these as well. Support for lower-case ra/dec was added to `fit_plate_solution.py` script.
