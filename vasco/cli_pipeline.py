@@ -13,6 +13,7 @@ from vasco.external_fetch_online import (fetch_gaia_neighbourhood, fetch_ps1_nei
 from vasco.external_fetch_usnob_vizier import fetch_usnob_neighbourhood
 from vasco.mnras.xmatch_stilts import (xmatch_sextractor_with_gaia, xmatch_sextractor_with_ps1)
 from vasco.utils.cdsskymatch import cdsskymatch
+import sys
 
 # --- helpers ---
 def _normalize_ra(val: float) -> float:
@@ -429,7 +430,7 @@ def _cds_log(xdir: Path, msg: str) -> None:
     xdir = Path(xdir)
     log = xdir / 'STEP4_CDS.log'
     with log.open('a', encoding='utf-8') as f:
-        f.write(msg.rstrip('') + "")
+        f.write(msg.rstrip('\n') + "\n")
     print(msg.rstrip(''))
 
 def _coords_from_tile_dirname(name: str) -> tuple[float, float] | None:
@@ -452,10 +453,12 @@ def cmd_step5_filter_within5(args: argparse.Namespace) -> int:
     Filter all xmatch CSVs under xmatch/ to rows with separation ≤ 5 arcsec.
     Writes side-by-side files with suffix '_within5arcsec.csv'.
     """
+    sys.stdout.write('[STEP5][DEBUG] entered step\n'); sys.stdout.flush()
+    # sys.stderr.write('[STEP5][DEBUG] entered step (stderr)\n'); sys.stderr.flush()
     run_dir = Path(args.workdir)
     xdir = run_dir / 'xmatch'
     if not xdir.exists():
-        print('[STEP5][ERROR] xmatch/ missing. Run step4-xmatch first.')
+        sys.stdout.write('[STEP5][ERROR] xmatch/ missing. Run step4-xmatch first.\n'); 
         return 2
 
     wrote = 0
@@ -466,7 +469,7 @@ def cmd_step5_filter_within5(args: argparse.Namespace) -> int:
         targets.extend(sorted(xdir.glob(pat)))
 
     if not targets:
-        print('[STEP5][WARN] No xmatch CSVs found in xmatch/.')
+        sys.stdout.write('[STEP5][WARN] No xmatch CSVs found in xmatch/.\n'); 
         return 0
 
     for csv in targets:
@@ -476,9 +479,11 @@ def cmd_step5_filter_within5(args: argparse.Namespace) -> int:
             _validate_within5_arcsec_unit_tolerant(csv)
             wrote += 1
         except Exception as e:
-            print('[STEP5][WARN] within5 failed for', csv.name, ':', e)
-
-    print(f'[STEP5] Wrote within5 CSVs for {wrote} xmatch files.')
+            sys.stdout.write(f'[STEP5][WARN] within5 failed for {csv.name}: {e}\n'); 
+            sys.stdout.flush()
+    
+    sys.stdout.flush()
+    sys.stdout.write(f'[STEP5] Wrote within5 CSVs for {wrote} xmatch files.\n'); 
     return 0
 
 # --- RESTORED: Step 6 (export & summarize) ---
@@ -498,7 +503,14 @@ def cmd_step6_summarize(args: argparse.Namespace) -> int:
     return 0
 
 # --- argparse + main ---
-def main(argv: List[str] | None = None) -> int:
+def main(argv: List[str] | None = None) -> int:    
+    try:
+        import sys
+        # Available on 3.7+; harmless if it fails
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
     p = argparse.ArgumentParser(
         prog='vasco.cli_pipeline',
         description='VASCO pipeline orchestrator (split workflow + POSSI-E guard + staging downloads)'
