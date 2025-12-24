@@ -175,6 +175,8 @@ def iter_catalog_files(catalogs_root: Path):
         # Root vanished; yield nothing
         return
 
+def is_non_zero_file(fpath):  
+    return os.path.isfile(fpath) and os.path.getsize(fpath) > 0
 
 def merge_one_tile(tile_path: Path, tol_arcsec: float, overwrite: bool,
                    publish_root: Path | None, bin_deg: float) -> int:
@@ -187,6 +189,9 @@ def merge_one_tile(tile_path: Path, tol_arcsec: float, overwrite: bool,
 
     frames = []
     for f in files:
+        if not is_non_zero_file(f):
+            print(f"[SKIP] {f}: empty file (zero bytes)")
+            continue
         # Fast probe to detect header-only (empty) CSV
         probe = pd.read_csv(f, nrows=1)
         if probe.empty:
