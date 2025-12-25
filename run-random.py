@@ -140,8 +140,19 @@ def has_raw_fits(tile_dir: Path) -> bool:
 def cmd_download_loop(args: argparse.Namespace) -> int:
     log.info("Starting download loop — CTRL+C to stop.")
     seen = load_seen_from_registry(REGISTRY_PATH)
+    planned = 0
+    errors = 0
+    limit = int(args.limit or 0)
+    max_errors = int(args.max_errors or 0)
     try:
         while True:
+            if limit and planned >= limit:
+                log.info(f"Reached limit={limit}. Stopping download loop.")
+                return 0
+            if max_errors and errors >= max_errors:
+                log.warning(f"Reached max_errors={max_errors}. Stopping download loop.")
+                return 1
+
             ra = random.uniform(RA_MIN, RA_MAX)
             dec = random.uniform(DEC_MIN, DEC_MAX)
             tid = tile_id_from_coords(ra, dec)
@@ -168,7 +179,8 @@ def cmd_download_loop(args: argparse.Namespace) -> int:
             ]
             rc = run_and_stream(cmd)
             if rc != 0:
-                log.warning(f"Download failed for {tid} (rc={rc}).")
+                errors += 1
+                log.warning(f"Download failed for {tid} (rc={rc}). errors={errors}")
             else:
                 # confirm we got a FITS; only then record registry
                 if has_raw_fits(Path(workdir_tile)):
@@ -191,6 +203,7 @@ def cmd_download_loop(args: argparse.Namespace) -> int:
                         log.info(f"[LEDGER] appended {tid} to tiles_registry.csv")
                     except Exception as e:
                         log.warning(f"[LEDGER] append failed for {tid}: {e}")
+                planned += 1
             time.sleep(float(args.sleep_sec or 15))
     except KeyboardInterrupt:
         log.info("Interrupted by user. Exiting download loop.")
@@ -311,6 +324,8 @@ def main(argv: list[str] | None = None) -> int:
     dl.add_argument('--survey', default=SURVEY)
     dl.add_argument('--pixel-scale-arcsec', dest='pixel_scale_arcsec', type=float, default=PIXEL_SCALE)
     dl.add_argument('--pixel-scale', dest='pixel_scale_arcsec', type=float, default=PIXEL_SCALE)
+    dl.add_argument('--limit', type=int, default=0, help='Maximum number of successful step1 downloads before stopping (0 = unlimited)')
+    dl.add_argument('--max-errors', type=int, default=0, help='Stop after this many step1 failures (0 = unlimited)')
     dl.set_defaults(func=cmd_download_loop)
 
     st = sub.add_parser('steps', help='Scan tiles and run requested steps where missing')
