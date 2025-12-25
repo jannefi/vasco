@@ -313,41 +313,62 @@ def _filter_hpm_gaia(xdir: Path, buckets: dict, poss_sep_arcsec: float = 5.0) ->
         out_flag.write_text('', encoding='utf-8')
 
 # --- commands ---
-def cmd_one(args: argparse.Namespace) -> int:
-    run_dir = _build_run_dir(Path(args.workdir) if args.workdir else None)
-    lg = dl.configure_logger(run_dir / 'logs')
-    out_raw = run_dir / 'raw'; out_raw.mkdir(parents=True, exist_ok=True)
-    ra = _to_float_ra(args.ra); dec = _to_float_dec(args.dec)
 
+def cmd_one(args: argparse.Namespace) -> int:
+    """
+    One-shot pipeline: 1+2+3 + export + xmatch, with deferred tile creation in step 1.
+    Avoids materializing data/tiles/<tileid> on download errors (non-FITS/non-WCS/non-POSS).
+    """
+    # DO NOT pre-create tile directory; keep logger central (optional)
+    run_dir = Path(args.workdir)  # do not call _build_run_dir here
+    lg = dl.configure_logger(Path('./data/logs'))
+
+    ra = _to_float_ra(args.ra)
+    dec = _to_float_dec(args.dec)
+
+    # --- STEP 1: download with deferral (downloader will stage & promote only on success)
     try:
         fits = dl.fetch_skyview_dss(
             ra, dec,
             size_arcmin=args.size_arcmin,
             survey=args.survey,
             pixel_scale_arcsec=args.pixel_scale_arcsec,
-            out_dir=out_raw, logger=lg
+            out_dir=run_dir / 'raw',  # downloader creates this only on success
+            logger=lg
         )
+        # Enforce POSSI-E post-promotion; may unlink & raise if not POSSI-E
         _enforce_possi_e_or_skip(Path(fits), lg)
+
     except RuntimeError as e:
+        # Non-POSS enforcement path keeps your original bookkeeping
         if 'Non-POSS plate returned by STScI' in str(e):
             print('[SKIP]', f'RA={ra:.6f}', f'Dec={dec:.6f}', '-> non-POSS; tile omitted.')
             counts = {'planned': 1, 'downloaded': 0, 'processed': 0, 'filtered_non_poss': 1}
-            missing = [{'ra': float(ra), 'dec': float(dec),
-                        'expected_stem': _expected_stem(ra, dec, args.survey, args.size_arcmin)}]
+            missing = [{
+                'ra': float(ra),
+                'dec': float(dec),
+                'expected_stem': _expected_stem(ra, dec, args.survey, args.size_arcmin)
+            }]
             _write_json(run_dir / 'RUN_COUNTS.json', counts)
             _write_json(run_dir / 'RUN_MISSING.json', missing)
             _write_json(run_dir / 'RUN_INDEX.json', [])
             _write_overview(run_dir, counts, [], missing)
             return 0
-        else:
-            raise
 
-    # Success -> proceed with 2+3 + exports + xmatch pipeline
+        # For non-FITS / non-WCS / other failures: downloader already wrote error artifacts
+        print('[STEP1][ERROR]', str(e))
+        return 1
+
+    # --- SUCCESS PATH (now it is safe to proceed and to write per-tile artifacts) ---
+    # STEP 2 + STEP 3
     p1, _ = run_pass1(fits, run_dir, config_root='configs')
     psf = run_psfex(p1, run_dir, config_root='configs')
     p2 = run_pass2(fits, run_dir, psf, config_root='configs')
+
+    # Exports & QA
     export_and_summarize(p2, run_dir, export=args.export, histogram_col=args.hist_col)
 
+    # STEP 4: xmatch (local or CDS)
     radius_arcmin = args.size_arcmin * (2 ** 0.5) * 0.5
     backend = args.xmatch_backend
 
@@ -390,6 +411,7 @@ def cmd_one(args: argparse.Namespace) -> int:
     else:
         print('[POST][WARN]', run_dir.name, 'Unknown xmatch backend:', backend)
 
+    # Final run bookkeeping & overview
     results = [{'tile': Path(fits).stem, 'pass1': str(p1), 'psf': str(psf), 'pass2': str(p2)}]
     counts = {'planned': 1, 'downloaded': 1, 'processed': 1, 'filtered_non_poss': 0}
     _write_json(run_dir / 'RUN_INDEX.json', results)
@@ -399,11 +421,21 @@ def cmd_one(args: argparse.Namespace) -> int:
     print('Run directory:', run_dir)
     return 0
 
+
+
 def cmd_step1_download(args: argparse.Namespace) -> int:
-    run_dir = _build_run_dir(Path(args.workdir) if args.workdir else None)
-    lg = dl.configure_logger(run_dir / 'logs')
-    out_raw = run_dir / 'raw'; out_raw.mkdir(parents=True, exist_ok=True)
-    ra = _to_float_ra(args.ra); dec = _to_float_dec(args.dec)
+    """
+    Step 1 download that avoids creating the tile folder/tree up front.
+    The downloader will stage under ./data/.staging and promote to run_dir/raw/
+    ONLY on success. On errors (non-FITS, non-WCS, non-POSS), no tile folder
+    is materialized; artifacts go to ./data/errors/.
+    """
+    # DO NOT pre-create tile directory; keep logger central (optional)
+    run_dir = Path(args.workdir)  # do not call _build_run_dir here
+    lg = dl.configure_logger(Path('./data/logs'))
+
+    ra = _to_float_ra(args.ra)
+    dec = _to_float_dec(args.dec)
 
     try:
         fits = dl.fetch_skyview_dss(
@@ -411,23 +443,35 @@ def cmd_step1_download(args: argparse.Namespace) -> int:
             size_arcmin=args.size_arcmin,
             survey=args.survey,
             pixel_scale_arcsec=args.pixel_scale_arcsec,
-            out_dir=out_raw, logger=lg
+            out_dir=run_dir / 'raw',   # downloader will mkdir only on success
+            logger=lg
         )
+        # Enforce POSSI-E after promotion; may delete the FITS and raise
         _enforce_possi_e_or_skip(Path(fits), lg)
+
     except RuntimeError as e:
+        # Non-POSS case gets special overview bookkeeping (as in your original)
         if 'Non-POSS plate returned by STScI' in str(e):
             print('[SKIP]', f'RA={ra:.6f}', f'Dec={dec:.6f}', '-> non-POSS; tile omitted.')
             counts = {'planned': 1, 'downloaded': 0, 'processed': 0, 'filtered_non_poss': 1}
-            missing = [{'ra': float(ra), 'dec': float(dec),
-                        'expected_stem': _expected_stem(ra, dec, args.survey, args.size_arcmin)}]
+            missing = [{
+                'ra': float(ra),
+                'dec': float(dec),
+                'expected_stem': _expected_stem(ra, dec, args.survey, args.size_arcmin)
+            }]
+            # Writing RUN_* is safe (run_dir parent may or may not exist; Path will create parents)
             _write_json(run_dir / 'RUN_COUNTS.json', counts)
             _write_json(run_dir / 'RUN_MISSING.json', missing)
             _write_json(run_dir / 'RUN_INDEX.json', [])
             _write_overview(run_dir, counts, [], missing)
             return 0
-        else:
-            raise
 
+        # For non-FITS / non-WCS / other failures:
+        # downloader already wrote artifacts to ./data/errors/, so just report.
+        print('[STEP1][ERROR]', str(e))
+        return 1
+
+    # --- SUCCESS PATH ---
     counts = {'planned': 1, 'downloaded': 1, 'processed': 0, 'filtered_non_poss': 0}
     _write_json(run_dir / 'RUN_COUNTS.json', counts)
     _write_json(run_dir / 'RUN_INDEX.json', [{'tile': Path(fits).stem}])
@@ -435,6 +479,8 @@ def cmd_step1_download(args: argparse.Namespace) -> int:
     _write_overview(run_dir, counts, [{'tile': Path(fits).stem}], [])
     print('[STEP1] Downloaded FITS ->', fits)
     return 0
+
+
 
 # --- overview writer ---
 def _write_overview(run_dir: Path, counts: dict, results: list, missing: list[dict] | None = None) -> None:
