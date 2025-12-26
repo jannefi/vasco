@@ -12,10 +12,16 @@ OUTPUT_CSV = DATA_ROOT / "tile_status.csv"
 # Each stage returns (completed: bool, warning_messages: list[str])
 # ----------------------------------------------------------------------
 
+
 def stage_1_raw_fits(tile: Path):
     raw_dir = tile / "raw"
-    fits_files = list(raw_dir.glob("dss1-red_*.fits")) if raw_dir.exists() else []
-    return bool(fits_files), []
+    if not raw_dir.exists():
+        return False, []
+
+    # Exact scheme: dss1*.fits 
+    matches = list(raw_dir.glob("dss1*.fits"))
+    return bool(matches), []
+
 
 
 def stage_2_pass1(tile: Path):
@@ -29,6 +35,56 @@ def stage_3_psf_and_pass2(tile: Path):
     if not (tile / "pass2.ldac").exists():
         missing.append("pass2.ldac")
     return not missing, missing
+
+
+
+def is_expected_missing(tile: Path) -> bool:
+    """
+    Return True if Stage 4/5 are 'missing' for an expected reason,
+    e.g. outside Gaia/PS1 coverage (as recorded by STEP4_CDS.log).
+    """
+    debug_log = tile / "xmatch" / "STEP4_CDS.log"
+    if debug_log.exists():
+        log_text = debug_log.read_text()
+        return (
+            "outside survey coverage" in log_text
+            or "xmatch failed" in log_text
+            or "skipped" in log_text
+        )
+    return False
+
+
+
+
+def add_consistency_warnings(tile: Path, completed: dict[int, bool], warnings: list[str]) -> None:
+    """
+    Append warnings about later stages present while earlier stages are missing.
+    Tiles that are missing stages 4/5 due to coverage gaps are annotated
+    as '(expected: outside survey coverage)' instead of plain warnings.
+    """
+    # Stages that are present for this tile
+    present_later = [s for s, ok in completed.items() if ok]
+
+    for later in present_later:
+        # Which earlier stages (1..later-1) are not completed?
+        earlier_missing = [e for e in range(1, later) if not completed.get(e, False)]
+        if not earlier_missing:
+            continue
+
+        # Special annotation for tiles that are valid despite missing 4/5
+        if (
+            later in (6, 7) and
+            any(e in (4, 5) for e in earlier_missing) and
+            is_expected_missing(tile)
+        ):
+            warnings.append(
+                f"stage {later} present while earlier stages {earlier_missing} are missing "
+                f"(expected: outside survey coverage)"
+            )
+        else:
+            warnings.append(
+                f"stage {later} present while earlier stages {earlier_missing} are missing"
+            )
 
 
 def stage_4_xmatch(tile: Path):
@@ -68,13 +124,14 @@ STAGES = [
 
 # ----------------------------------------------------------------------
 
+
 def main():
     rows = []
-
     for tile in sorted(p for p in TILES_ROOT.iterdir() if p.is_dir() and p.name.startswith("tile-")):
         completed = {}
         warnings = []
 
+        # Run stage checkers and collect per-stage warnings
         for stage_num, stage_name, checker in STAGES:
             ok, stage_warnings = checker(tile)
             completed[stage_num] = ok
@@ -91,15 +148,10 @@ def main():
             stage_name = "none"
             warnings.append("no known stage outputs found")
 
-        # Consistency warnings: later stage exists but earlier missing
-        for stage_num, _, _ in STAGES:
-            if completed.get(stage_num):
-                for earlier in range(1, stage_num):
-                    if not completed.get(earlier, False):
-                        warnings.append(
-                            f"stage {stage_num} present but stage {earlier} missing"
-                        )
+        # Add the new, annotated consistency warnings *after* `completed` is ready
+        add_consistency_warnings(tile, completed, warnings)
 
+        # Build the row
         rows.append({
             "tile_id": tile.name,
             "stage": highest,
@@ -109,12 +161,10 @@ def main():
 
     # Write CSV
     with OUTPUT_CSV.open("w", newline="") as f:
-        writer = csv.DictWriter(
-            f,
-            fieldnames=["tile_id", "stage", "stage_name", "warning"]
-        )
+        writer = csv.DictWriter(f, fieldnames=["tile_id", "stage", "stage_name", "warning"])
         writer.writeheader()
         writer.writerows(rows)
+
 
 
 if __name__ == "__main__":
