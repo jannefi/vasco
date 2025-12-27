@@ -14,6 +14,7 @@ RUN apt-get update \
     && apt-get install -y default-jre \
     && apt-get install -y python3 python3-pip python3-dev \
     && apt-get install -y wget ca-certificates build-essential \
+    && apt-get install -y git curl wget gawk findutils procps libgfortran5 libopenblas0 \
     && rm -rf /var/lib/apt/lists/*
 
 # --- 2. Install SExtractor and PSFEx (Astromatic tools for source detection/PSF modeling) ---
