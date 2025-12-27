@@ -183,6 +183,21 @@ python ./scripts/qc_global_summary.py \
 - **Outputs:** `./data/run_summary.md`, `run_summary.csv`, `run_summary_tiles.csv`, `run_summary_tiles_counts.csv`
 
 ---
+
+### Step 4: Downstream Analysis (from Parquet)
+- All further analysis, matching, and reporting should use the partitioned Parquet dataset at `./data/local-cats/_master_optical_parquet/`.
+- If a CSV export is ever needed, it can be generated from Parquet using a utility script or Pandas/Arrow.
+
+---
+
+### **Post-Pipeline Step 5: Compare VASCO Results to External Catalogue (Optional, Per-Catalogue)**
+- **Script:**  
+  `./scripts/compare_vasco_vs_optical.py --vasco ./data/vasco-cats/vanish_neowise_1765546031.csv --radius-arcsec 2.0 --bin-deg 5 --chunk-size 20000 --out-dir data/local-cats/out/v3_match --write-chunks`
+- **Purpose:**  
+  Compares a science catalogue (e.g., NEOWISE vanishing sources) to the master optical catalogue, finding matches and unmatched sources.
+- **Output:**  
+  Chunked CSVs and summary in `data/local-cats/out/v3_match/`
+
 #### or optionally: IR aware, annotation only (if step 1.5 has been completed)
 
 ```bash
@@ -215,22 +230,6 @@ This approach lets you remove optical sources before matching, auditing how coun
 
 ---
 
-### Step 4: Downstream Analysis (from Parquet)
-- All further analysis, matching, and reporting should use the partitioned Parquet dataset at `./data/local-cats/_master_optical_parquet/`.
-- If a CSV export is ever needed, it can be generated from Parquet using a utility script or Pandas/Arrow.
-
----
-
-### **Post-Pipeline Step 5: Compare VASCO Results to External Catalogue (Optional, Per-Catalogue)**
-- **Script:**  
-  `./scripts/compare_vasco_vs_optical.py --vasco ./data/vasco-cats/vanish_neowise_1765546031.csv --radius-arcsec 2.0 --bin-deg 5 --chunk-size 20000 --out-dir data/local-cats/out/v3_match --write-chunks`
-- **Purpose:**  
-  Compares a science catalogue (e.g., NEOWISE vanishing sources) to the master optical catalogue, finding matches and unmatched sources.
-- **Output:**  
-  Chunked CSVs and summary in `data/local-cats/out/v3_match/`
-
----
-
 ### Best Practices & Notes
 - **Memory efficiency:** The pipeline never loads all detections into RAM at once; each tile is processed independently and written incrementally.
 - **Scalability:** Parquet partitions allow efficient querying, filtering, and joining for very large datasets.
@@ -247,6 +246,7 @@ This approach lets you remove optical sources before matching, auditing how coun
 | 1–6 | `run-random.py steps ...` | Per-tile processing | Per-tile catalogues, matches, summaries | No |
 | Post 0 | `fit_plate_solution.py` | Per-tile astrometric correction (Gaia) | Match/Unmatched CSVs | No |
 | Post 1 | `filter_unmatched_all.py` | Per-tile unmatched lists | Unmatched CSVs | No |
+| Post 5 | `make post15_async_chunks etc.` | NEOWISE filter | Parquet/CSVs for NEOWISE deduction | No |
 | Post 2 | `summarize_runs.py` | Aggregate run summary | Markdown/CSV summaries | No |
 | Post 3 | `merge_tile_catalogs.py` | Merge/dedupe all tile catalogues | Master parquet | No |
 | Post 4 | `make_master_optical_parquet.py` | Not required! Convert master CSV to Parquet | Parquet dataset | Yes |
