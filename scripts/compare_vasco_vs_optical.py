@@ -1,20 +1,25 @@
 
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-Memory-friendly VASCO (NEOWISE-only) ↔ optical matching with Parquet bin pruning.
+Memory-friendly VASCO (NEOWISE-only) ↔ optical matching with Parquet bin pruning,
+plus IR-aware options for Step 1.5 reproducibility against MNRAS 2022.
 
-Key capabilities:
+New features:
+- --irflags-parquet PATH : read global flags parquet (default aligns with WORKFLOW.md)
+- --exclude-ir-strict    : drop optical rows where ir_match_strict==True (Parquet mode only)
+- --annotate-ir          : add ir_strict_has_match and opt_row_id to matched/unmatched outputs
+
+Existing capabilities:
 - Partition-aware scan of an optical Parquet dataset (5°×5° bins by default)
-- Builds a KD-tree (SciPy) or grid index over ONLY the partitions relevant to the current VASCO chunk
-- Streams results to disk per chunk to avoid large in-memory DataFrames
-- Falls back to reading a CSV master or scanning tiles if Parquet is not provided
+- KD-tree (SciPy) or grid index over ONLY the partitions relevant to current chunk
+- Streams results per chunk to keep RAM small; chunk or consolidated outputs
 
 Outputs (compatible with your current pipeline):
-  <out>/vasco_matched_to_optical.csv           # or chunked files if --write-chunks=true
+  <out>/vasco_matched_to_optical.csv            # or chunk files if --write-chunks=true
   <out>/vasco_still_ir_only.csv
   <out>/match_summary.txt
+
 """
 
 import argparse
@@ -35,23 +40,21 @@ except Exception:
     _HAS_ARROW = False
 
 # Candidate RA/Dec column names
-OPT_RA_CANDS    = ["ALPHA_J2000", "RAJ2000", "RA", "X_WORLD", "ra"]
-OPT_DEC_CANDS   = ["DELTA_J2000", "DEJ2000", "DEC", "Y_WORLD", "dec"]
-VASCO_RA_CANDS  = ["RA_NEOWISE", "RAJ2000", "RA", "ra"]
-VASCO_DEC_CANDS = ["DEC_NEOWISE", "DEJ2000", "DEC", "dec"]
-
+OPT_RA_CANDS   = ["ALPHA_J2000", "RAJ2000", "RA", "X_WORLD", "ra"]
+OPT_DEC_CANDS  = ["DELTA_J2000", "DEJ2000", "DEC", "Y_WORLD", "dec"]
+VASCO_RA_CANDS = ["RA_NEOWISE", "RAJ2000", "RA", "ra"]
+VASCO_DEC_CANDS= ["DEC_NEOWISE", "DEJ2000", "DEC", "dec"]
 
 DEFAULT_OPTICAL_PARQUET = os.getenv(
     "OPTICAL_PARQUET_DIR",
-    "data/local-cats/_master_optical_parquet"  # or "data/metadata/_master_optical_parquet"
+    "data/local-cats/_master_optical_parquet"  # default from WORKFLOW.md
 )
+DEFAULT_IRFLAGS_PARQUET = "data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet"
 
-
-# ------------------ Generic helpers ------------------
-
+# --------------------------- Generic helpers ---------------------------
 
 def find_coord_columns(df, ra_cands, dec_cands, label):
-    ra = next((c for c in ra_cands  if c in df.columns), None)
+    ra = next((c for c in ra_cands if c in df.columns), None)
     de = next((c for c in dec_cands if c in df.columns), None)
     if not ra or not de:
         raise ValueError(f"[{label}] Could not find RA/Dec in: {list(df.columns)}")
@@ -74,11 +77,10 @@ def angsep_arcsec(ra1_deg, dec1_deg, ra2_deg, dec2_deg):
     cos_d = np.clip(cos_d, -1.0, 1.0)
     return np.rad2deg(np.arccos(cos_d)) * 3600.0
 
-
-# ------------------ Readers (VASCO + optical) ------------------
+# --------------------------- Readers (VASCO + optical) ---------------------------
 
 def read_vasco_csv(path):
-    df = pd.read_csv(path)   # NEOWISE-only; keep all columns
+    df = pd.read_csv(path)  # NEOWISE-only; keep all columns
     v_ra, v_de = find_coord_columns(df, VASCO_RA_CANDS, VASCO_DEC_CANDS, "VASCO")
     return df, v_ra, v_de
 
@@ -86,11 +88,11 @@ def read_optical_master_csv(path):
     # Load minimal columns from CSV master to keep RAM down
     probe = pd.read_csv(path, nrows=1)
     o_ra, o_de = find_coord_columns(probe, OPT_RA_CANDS, OPT_DEC_CANDS, "OPTICAL(master CSV)")
-    usecols = [o_ra, o_de] + [c for c in ["source_file","tile_id","image_catalog_path"] if c in probe.columns]
+    usecols = [o_ra, o_de] + [c for c in ["row_id","source_file","tile_id","image_catalog_path"] if c in probe.columns]
     df = pd.read_csv(path, usecols=usecols, dtype={o_ra:"float32", o_de:"float32"})
-    for c in ["source_file","tile_id","image_catalog_path"]:
+    for c in ["row_id","source_file","tile_id","image_catalog_path"]:
         if c not in df.columns:
-            df[c] = ""
+            df[c] = "" if c != "row_id" else pd.NA
     return df, o_ra, o_de
 
 def read_optical_from_tiles(tiles_root):
@@ -104,7 +106,6 @@ def read_optical_from_tiles(tiles_root):
         files += glob.glob(pat)
     if not files:
         raise FileNotFoundError(f"No sextractor_pass2.csv found under {tiles_root}")
-
     frames = []
     o_ra = o_de = None
     for f in files:
@@ -112,99 +113,79 @@ def read_optical_from_tiles(tiles_root):
         ra_col, de_col = find_coord_columns(probe, OPT_RA_CANDS, OPT_DEC_CANDS, "OPTICAL(tiles)")
         dfi = pd.read_csv(f, usecols=[ra_col, de_col], dtype={ra_col:"float32", de_col:"float32"})
         dfi["source_file"] = f
+        # 'row_id' is typically not available from tiles CSV -> annotate False later
+        dfi["row_id"] = pd.NA
         frames.append(dfi)
         o_ra, o_de = ra_col, de_col
     big = pd.concat(frames, ignore_index=True)
     for c in ["tile_id","image_catalog_path"]:
-        if c not in big.columns:
-            big[c] = ""
+        if c not in big.columns: big[c] = ""
     return big, o_ra, o_de
 
-
-# ------------------ Parquet (partition-aware) ------------------
+# --------------------------- Parquet (partition-aware) ---------------------------
 
 def bins_for_chunk(ra_deg_arr, dec_deg_arr, bin_deg):
-    """Return sorted unique RA and Dec bin indices for an array, incl. ±1-neighbors."""
+    """Return sorted unique RA and Dec bin indices for an array, incl. ±1 neighbors."""
     ra = np.asarray(ra_deg_arr, dtype=np.float32) % 360.0
     de = np.asarray(dec_deg_arr, dtype=np.float32)
-    ra_bin  = np.floor(ra / bin_deg).astype(np.int32)
-    de_bin  = np.floor((de + 90.0) / bin_deg).astype(np.int32)
-
-    ra_bins = set()
-    de_bins = set()
+    ra_bin = np.floor(ra / bin_deg).astype(np.int32)
+    de_bin = np.floor((de + 90.0) / bin_deg).astype(np.int32)
     ra_bins_all = np.unique(ra_bin)
     de_bins_all = np.unique(de_bin)
-
-    # include neighbors to catch border cases
+    ra_bins = set(); de_bins = set()
     ra_mod = int(np.ceil(360.0 / bin_deg))
     de_mod = int(np.ceil(180.0 / bin_deg))
-
     for rb in ra_bins_all:
         for d in (-1,0,1):
             ra_bins.add((rb + d) % ra_mod)
     for db in de_bins_all:
         for d in (-1,0,1):
             nb = db + d
-            if 0 <= nb < de_mod:
-                de_bins.add(nb)
+            if 0 <= nb < de_mod: de_bins.add(nb)
     return sorted(ra_bins), sorted(de_bins), ra_mod, de_mod
 
+def _normalize_table(tbl: pa.Table) -> pa.Table:
+    """Cast Arrow columns that can trip pandas (dict/binary) to safe types."""
+    tbl = tbl.combine_chunks()
+    fields = tbl.schema
+    new_cols = []; new_names = []
+    for i, field in enumerate(fields):
+        col = tbl.column(i)
+        t = field.type
+        if pa.types.is_dictionary(t):
+            col = pa.compute.cast(col, pa.string()); t = pa.string()
+        elif pa.types.is_binary(t):
+            col = pa.compute.cast(col, pa.string()); t = pa.string()
+        new_cols.append(col); new_names.append(field.name)
+    return pa.Table.from_arrays(new_cols, names=new_names)
 
-
-def read_parquet_slice(dataset_root, o_ra_name, o_de_name, ra_bins, de_bins):
+def read_parquet_slice(dataset_root, o_ra_name, o_de_name, ra_bins, de_bins, want_row_id=True):
     """
     Read only the ra_bin/dec_bin partitions and return a pandas DataFrame with
-    float32 RA/Dec plus optional provenance columns, robust to Arrow dict/binary types.
+    float32 RA/Dec plus provenance columns and optional row_id (string).
     """
     if not _HAS_ARROW:
         raise RuntimeError("pyarrow is required for Parquet dataset scanning.")
-
     cols = [o_ra_name, o_de_name]
-    maybe_prov = ["source_file", "tile_id", "image_catalog_path"]
-
-    def _normalize_table(tbl: pa.Table) -> pa.Table:
-        """Cast Arrow columns that can trip pandas (dict/binary) to safe types."""
-        tbl = tbl.combine_chunks()  # defragment columns
-        fields = tbl.schema
-        new_cols = []
-        new_names = []
-        for i, field in enumerate(fields):
-            col = tbl.column(i)
-            t = field.type
-            # Cast dictionary to plain strings
-            if pa.types.is_dictionary(t):
-                col = pa.compute.cast(col, pa.string())
-                t = pa.string()
-            # Cast binary to string (paths/provenance sometimes end up binary)
-            elif pa.types.is_binary(t):
-                col = pa.compute.cast(col, pa.string())
-                t = pa.string()
-            # Leave floats/ints/strings untouched
-            new_cols.append(col)
-            new_names.append(field.name)
-        return pa.Table.from_arrays(new_cols, names=new_names)
+    maybe_prov = ["row_id","source_file","tile_id","image_catalog_path"]
 
     try:
-        # Preferred: one Dataset with hive partitioning + filter
         dset = ds.dataset(str(dataset_root), format="parquet", partitioning="hive")
-        # Include provenance columns if they exist in the dataset schema
+        # include provenance columns present in dataset
         for c in maybe_prov:
             if c in dset.schema.names and c not in cols:
                 cols.append(c)
         f = (ds.field("ra_bin").isin(ra_bins)) & (ds.field("dec_bin").isin(de_bins))
         table = dset.to_table(columns=cols, filter=f)
         table = _normalize_table(table)
-        # Safe conversion: avoid pandas ExtensionArray by NOT passing Arrow dtype mapper
         df = table.to_pandas(strings_to_categorical=False)
-
     except Exception:
-        # Fallback: read only the matching subdirectories (robust if hive discovery is unavailable)
+        # Fallback: read matching subdirectories
         pieces = []
         for rb in ra_bins:
             for db in de_bins:
                 subdir = Path(dataset_root) / f"ra_bin={rb}" / f"dec_bin={db}"
-                if not subdir.exists():
-                    continue
+                if not subdir.exists(): continue
                 sub_ds = ds.dataset(str(subdir), format="parquet")
                 sub_cols = cols[:]
                 for c in maybe_prov:
@@ -218,19 +199,47 @@ def read_parquet_slice(dataset_root, o_ra_name, o_de_name, ra_bins, de_bins):
             df = pa.concat_tables(pieces).to_pandas(strings_to_categorical=False)
 
     # Final dtype fixes
-    if o_ra_name in df.columns:
-        df[o_ra_name] = df[o_ra_name].astype("float32")
-    if o_de_name in df.columns:
-        df[o_de_name] = df[o_de_name].astype("float32")
-    for c in maybe_prov:
-        if c not in df.columns:
-            df[c] = ""
+    if o_ra_name in df.columns: df[o_ra_name] = df[o_ra_name].astype("float32")
+    if o_de_name in df.columns: df[o_de_name] = df[o_de_name].astype("float32")
+    for c in ["source_file","tile_id","image_catalog_path"]:
+        if c not in df.columns: df[c] = ""
+    if "row_id" not in df.columns: df["row_id"] = pd.NA
     return df
 
+# --------------------------- IR flags helpers ---------------------------
 
+def load_irflags_dict(path: Path):
+    """
+    Load global flags parquet and return a dict: opt_row_id(str) -> bool(ir_match_strict).
+    If missing/unreadable, returns empty dict.
+    """
+    d = {}
+    if not path or not path.exists():
+        return d
+    try:
+        flags = pd.read_parquet(path, engine="pyarrow")
+        if "row_id" not in flags.columns:
+            return d
+        # normalize boolean column
+        if "ir_match_strict" in flags.columns:
+            strict = flags["ir_match_strict"].replace({"True":True,"False":False}).astype("boolean")
+            for rid, val in zip(flags["row_id"].astype(str), strict.fillna(False).astype(bool)):
+                if pd.isna(rid): continue
+                d[str(rid)] = bool(val)
+        else:
+            # fallback from sep_arcsec <= 5.0 if boolean missing
+            sep = pd.to_numeric(flags.get("sep_arcsec", pd.Series([], dtype="float64")), errors="coerce")
+            # default radius = 5.0 arcsec
+            ok = sep.le(5.0).fillna(False)
+            for rid, val in zip(flags["row_id"].astype(str), ok.astype(bool)):
+                if pd.isna(rid): continue
+                d[str(rid)] = bool(val)
+    except Exception:
+        # return empty on any error
+        return {}
+    return d
 
-
-# ------------------ Candidate index (KD-tree or grid) ------------------
+# --------------------------- KDTree/Grid index ---------------------------
 
 class KDIndex:
     def __init__(self, ra_deg, dec_deg):
@@ -283,32 +292,35 @@ class KDIndex:
                         cand.extend(self.grid.get((r2, d2), []))
             return np.asarray(cand, dtype=np.int32)
 
-
-# ------------------ Matching driver (with Parquet pruning) ------------------
+# --------------------------- Matching driver (IR-aware) ---------------------------
 
 def nearest_within_radius_streaming(
     vasco_df, v_ra, v_de,
-    optical_source,              # dict describing source mode
-    o_ra_hint, o_de_hint,        # preferred RA/Dec column names to look for
+    optical_source,  # dict describing source mode
+    o_ra_name, o_de_name,
     radius_arcsec,
     out_dir: Path,
     chunk_size=20000,
     bin_deg=5.0,
-    write_chunks=True
+    write_chunks=True,
+    irflags_dict=None,
+    exclude_ir_strict=False,
+    annotate_ir=False
 ):
     """
     Stream VASCO rows by chunk. For each chunk:
       - identify (ra_bin, dec_bin) sets
-      - load only those Parquet partitions (or full CSV/tiles if needed)
+      - Parquet mode: load only those partitions, optionally exclude IR-strict rows
       - build KD-index
-      - match, then write matched/unmatched chunk CSVs immediately (if write_chunks)
+      - match; write matched/unmatched chunk CSVs immediately (if write_chunks)
+
     Returns: (matched_paths, unmatched_paths, summary_dict)
     """
     matched_paths, unmatched_paths = [], []
     total_matched = total_unmatched = 0
 
+    # Prepare optical source frame or root
     if optical_source["mode"] == "parquet":
-        o_ra_name, o_de_name = o_ra_hint, o_de_hint   # names in the parquet dataset
         ds_root = optical_source["root"]
     elif optical_source["mode"] == "csv":
         df_csv, o_ra_name, o_de_name = read_optical_master_csv(optical_source["path"])
@@ -324,12 +336,23 @@ def nearest_within_radius_streaming(
         if optical_source["mode"] == "parquet":
             ra_bins, de_bins, _, _ = bins_for_chunk(ra_arr, de_arr, bin_deg)
             opt = read_parquet_slice(ds_root, o_ra_name, o_de_name, ra_bins, de_bins)
+            # Optional IR-strict exclusion (only when row_id is present)
+            if exclude_ir_strict and irflags_dict and "row_id" in opt.columns:
+                # Keep rows where row_id NOT in dict or dict[rid]==False
+                rid = opt["row_id"].astype(str)
+                mask = ~rid.isin(irflags_dict) | (rid.map(irflags_dict).fillna(False) == False)
+                opt = opt.loc[mask].reset_index(drop=True)
         else:
             opt = df_csv  # CSV or tiles already in memory
+            if exclude_ir_strict and irflags_dict:
+                print("[WARN] --exclude-ir-strict ignored (non-Parquet optical source or missing row_id).", file=sys.stderr)
 
         if opt.empty:
             # everything unmatched for this chunk
             unmatched_df = sub.copy()
+            if annotate_ir:
+                unmatched_df["ir_strict_has_match"] = False
+                unmatched_df["opt_row_id"] = pd.NA
             if write_chunks:
                 up = out_dir / f"vasco_still_ir_only_chunk_{chunk_id:06d}.csv"
                 unmatched_df.to_csv(up, index=False)
@@ -344,27 +367,50 @@ def nearest_within_radius_streaming(
         matched_rows, unmatched_rows = [], []
         opt_ra = opt[o_ra_name].values
         opt_de = opt[o_de_name].values
+        opt_row_id_col_present = ("row_id" in opt.columns)
 
-        for i, row in sub.iterrows():
+        # Precompute opt row_id series (string) if present (for annotation/exclusion)
+        opt_rid = opt["row_id"].astype(str) if opt_row_id_col_present else None
+
+        for _, row in sub.iterrows():
             vra = float(row[v_ra]); vde = float(row[v_de])
             cand_idx = idx.query_radius(vra, vde, radius_arcsec)
             if cand_idx.size == 0:
-                unmatched_rows.append(row.to_dict()); continue
+                out = row.to_dict()
+                if annotate_ir:
+                    out["ir_strict_has_match"] = False
+                    out["opt_row_id"] = pd.NA
+                unmatched_rows.append(out)
+                continue
+
             sep = angsep_arcsec(vra, vde, opt_ra[cand_idx], opt_de[cand_idx])
             j_rel = int(sep.argmin()); j = int(cand_idx[j_rel]); m = float(sep[j_rel])
+
             if m <= radius_arcsec:
                 out = row.to_dict()
                 out["match_arcsec"] = m
-                out["opt_index"]    = j
-                out["opt_ra"]       = float(opt_ra[j])
-                out["opt_dec"]      = float(opt_de[j])
+                out["opt_index"] = j
+                out["opt_ra"] = float(opt_ra[j])
+                out["opt_dec"] = float(opt_de[j])
                 # provenance if present
                 for c in ["source_file","tile_id","image_catalog_path"]:
-                    if c in opt.columns:
-                        out[f"opt_{c}"] = opt.iloc[j][c]
+                    if c in opt.columns: out[f"opt_{c}"] = opt.iloc[j][c]
+                # IR annotation
+                if annotate_ir:
+                    if opt_row_id_col_present:
+                        rid = opt_rid.iloc[j]
+                        out["opt_row_id"] = rid
+                        out["ir_strict_has_match"] = bool(irflags_dict.get(str(rid), False)) if irflags_dict else False
+                    else:
+                        out["opt_row_id"] = pd.NA
+                        out["ir_strict_has_match"] = False
                 matched_rows.append(out)
             else:
-                unmatched_rows.append(row.to_dict())
+                out = row.to_dict()
+                if annotate_ir:
+                    out["ir_strict_has_match"] = False
+                    out["opt_row_id"] = pd.NA
+                unmatched_rows.append(out)
 
         matched_df   = pd.DataFrame(matched_rows)
         unmatched_df = pd.DataFrame(unmatched_rows)
@@ -372,10 +418,13 @@ def nearest_within_radius_streaming(
         if write_chunks:
             if not matched_df.empty:
                 mp = out_dir / f"vasco_matched_to_optical_chunk_{chunk_id:06d}.csv"
-                matched_df.to_csv(mp, index=False); matched_paths.append(mp)
+                matched_df.to_csv(mp, index=False)
+                matched_paths.append(mp)
             if not unmatched_df.empty:
                 up = out_dir / f"vasco_still_ir_only_chunk_{chunk_id:06d}.csv"
-                unmatched_df.to_csv(up, index=False); unmatched_paths.append(up)
+                unmatched_df.to_csv(up, index=False)
+                unmatched_paths.append(up)
+
         total_matched  += len(matched_df)
         total_unmatched+= len(unmatched_df)
 
@@ -390,64 +439,83 @@ def nearest_within_radius_streaming(
         "bin_deg": bin_deg,
         "radius_arcsec": radius_arcsec,
         "optical_mode": optical_source["mode"],
+        "exclude_ir_strict": bool(exclude_ir_strict),
+        "annotate_ir": bool(annotate_ir),
     }
     return matched_paths, unmatched_paths, summary
 
-
-# ------------------ CLI ------------------
+# --------------------------- CLI ---------------------------
 
 def main():
-    ap = argparse.ArgumentParser(description="Parquet-pruned, streaming VASCO vs optical matcher.")
+    ap = argparse.ArgumentParser(description="Parquet-pruned, streaming VASCO vs optical matcher (IR-aware).")
     ap.add_argument("--vasco", required=True, help="Path to vasco.csv (NEOWISE-only)")
-    # Preferred: Parquet dataset (partitioned by ra_bin/dec_bin)
+    # Preferred: Parquet dataset (partitioned ra_bin/dec_bin)
     ap.add_argument("--optical-master-parquet", default=None, help="Path to Parquet dataset root")
     # Fallbacks:
     ap.add_argument("--optical-master-csv", default=None, help="Path to CSV master (heavier memory)")
     ap.add_argument("--tiles-root", default=None, help="Tiles root (scan sextractor_pass2.csv if no master)")
+
     # Tuning:
     ap.add_argument("--radius-arcsec", type=float, default=2.0)
     ap.add_argument("--bin-deg", type=float, default=5.0, help="Partition bin size used when writing the Parquet dataset")
     ap.add_argument("--chunk-size", type=int, default=20000)
     ap.add_argument("--out-dir", default="./out")
     ap.add_argument("--write-chunks", action="store_true", help="Write per-chunk CSVs and skip concatenation")
-    args = ap.parse_args()
 
+    # New IR-aware options:
+    ap.add_argument("--irflags-parquet", default=DEFAULT_IRFLAGS_PARQUET,
+                    help="Global flags parquet from Post 1.5 (default aligns with WORKFLOW.md)")
+    ap.add_argument("--exclude-ir-strict", action="store_true",
+                    help="Exclude optical rows that have ir_match_strict==True (Parquet mode only)")
+    ap.add_argument("--annotate-ir", action="store_true",
+                    help="Add ir_strict_has_match and opt_row_id columns to outputs")
+
+    args = ap.parse_args()
     out = Path(args.out_dir); out.mkdir(parents=True, exist_ok=True)
+
+    # Read VASCO
     vasco_df, v_ra, v_de = read_vasco_csv(args.vasco)
 
     # Decide optical source
     if not (args.optical_master_parquet or args.optical_master_csv or args.tiles_root):
         if Path(DEFAULT_OPTICAL_PARQUET).exists():
             args.optical_master_parquet = DEFAULT_OPTICAL_PARQUET
-    
+
     if args.optical_master_parquet:
         if not _HAS_ARROW:
             print("[ERROR] pyarrow is required for --optical-master-parquet.", file=sys.stderr)
             return 2
         optical_source = {"mode":"parquet", "root": Path(args.optical_master_parquet)}
-        # Required RA/Dec column names in Parquet dataset must be provided by you at write time.
-        # By convention we used ALPHA_J2000/DELTA_J2000 in the conversion step.
-        o_ra_hint, o_de_hint = "ALPHA_J2000", "DELTA_J2000"
+        # Required RA/Dec column names in Parquet dataset must be present; conventionally ALPHA_J2000/DELTA_J2000
+        o_ra_name, o_de_name = "ALPHA_J2000", "DELTA_J2000"
     elif args.optical_master_csv:
         optical_source = {"mode":"csv", "path": args.optical_master_csv}
-        o_ra_hint, o_de_hint = None, None  # will be inferred in reader
+        o_ra_name = o_de_name = None  # inferred in reader
     elif args.tiles_root:
         optical_source = {"mode":"tiles", "tiles_root": args.tiles_root}
-        o_ra_hint, o_de_hint = None, None
+        o_ra_name = o_de_name = None
     else:
-        print("[ERROR] Provide one of --optical-master-parquet | --optical-master-csv | --tiles-root", file=sys.stderr)
+        print("[ERROR] Provide one of --optical-master-parquet / --optical-master-csv / --tiles-root", file=sys.stderr)
         return 2
+
+    # IR flags dict (row_id -> bool), used for exclusion/annotation (Parquet mode)
+    irflags_dict = {}
+    if args.irflags_parquet:
+        irflags_dict = load_irflags_dict(Path(args.irflags_parquet))
 
     # Run streaming matcher
     matched_paths, unmatched_paths, summary = nearest_within_radius_streaming(
         vasco_df, v_ra, v_de,
         optical_source,
-        o_ra_hint or "ALPHA_J2000", o_de_hint or "DELTA_J2000",
+        o_ra_name or "ALPHA_J2000", o_de_name or "DELTA_J2000",
         args.radius_arcsec,
         out,
         chunk_size=args.chunk_size,
         bin_deg=args.bin_deg,
-        write_chunks=args.write_chunks
+        write_chunks=args.write_chunks,
+        irflags_dict=irflags_dict,
+        exclude_ir_strict=args.exclude_ir_strict,
+        annotate_ir=args.annotate_ir
     )
 
     # Write summary
@@ -459,16 +527,16 @@ def main():
         f.write(f"Chunks: {summary['chunks']}\n")
         f.write(f"Matched: {summary['matched']}\n")
         f.write(f"Still IR-only: {summary['unmatched']}\n")
+        f.write(f"Exclude IR-strict (optical): {summary['exclude_ir_strict']}\n")
+        f.write(f"Annotate IR: {summary['annotate_ir']}\n")
 
     # Concatenate if not writing chunks
     if not args.write_chunks:
-        # Read all in-memory (final small step); if you prefer, keep chunked files.
         if matched_paths:
             matched_all = pd.concat([pd.read_csv(p) for p in matched_paths], ignore_index=True)
             matched_all.to_csv(out / "vasco_matched_to_optical.csv", index=False)
         else:
             pd.DataFrame([]).to_csv(out / "vasco_matched_to_optical.csv", index=False)
-
         if unmatched_paths:
             unmatched_all = pd.concat([pd.read_csv(p) for p in unmatched_paths], ignore_index=True)
             unmatched_all.to_csv(out / "vasco_still_ir_only.csv", index=False)
