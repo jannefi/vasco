@@ -143,6 +143,11 @@ After processing all tiles, the pipeline now **skips creation of a monolithic ma
 ---
 
 ### Step 1.5 (TAP async upload + sidecar + QC)
+
+**Note** The TAP async jobs during step 1.5/1 can take a long time to complete depending (mainly) on the size of your dataset. Prepare for a long wait. Monitor the situation for possible time-outs and other errors. This NEOWISE catalog is huge. I might have change the catalog(s) in the future, but for now, it's important to use NEOWISE-R Single Exposure (L1b) Source Table (neowiser_p1bs_psd).  Reference: https://www.ipac.caltech.edu/doi/irsa/10.26131/IRSA144 
+
+Please make sure to run each sub-step carefully exactly as described:
+
 ```bash
 # 0) Extract positions (if not done yet)
 python ./scripts/extract_positions_for_neowise_se.py \
@@ -176,6 +181,37 @@ python ./scripts/qc_global_summary.py \
 - **Script:** `./scripts/summarize_runs.py --data-dir ./data`
 - **Purpose:** Aggregates statistics across all tiles, producing Markdown and CSV summaries.
 - **Outputs:** `./data/run_summary.md`, `run_summary.csv`, `run_summary_tiles.csv`, `run_summary_tiles_counts.csv`
+
+---
+#### or optionally: IR aware, annotation only (if step 1.5 has been completed)
+
+```bash
+python ./scripts/compare_vasco_vs_optical.py \
+  --vasco ./data/vasco-cats/vanish_neowise_1765546031.csv \
+  --optical-master-parquet ./data/local-cats/_master_optical_parquet \
+  --irflags-parquet ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
+  --annotate-ir \
+  --radius-arcsec 2.0 \
+  --out-dir ./data/local-cats/out/v3_match \
+  --write-chunks
+```
+
+This approach lets you quantify how many of your VASCO <-> optical matches fall on optical sources that already have strict NEOWISE associations
+
+#### ...and IR-aware, exluding IR-strict optical rows
+
+```bash
+python ./scripts/compare_vasco_vs_optical.py \
+  --vasco ./data/vasco-cats/vanish_neowise_1765546031.csv \
+  --optical-master-parquet ./data/local-cats/_master_optical_parquet \
+  --irflags-parquet ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
+  --exclude-ir-strict \
+  --radius-arcsec 2.0 \
+  --out-dir ./data/local-cats/out/v3_match \
+  --write-chunks
+```
+
+This approach lets you remove optical sources before matching, auditing how counts shift relative to reported MNRAS numbers/datasets. You can run both approaches and compare the match_summary.txt numbers and chunk totals.
 
 ---
 
