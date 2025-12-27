@@ -58,7 +58,7 @@ echo "[OK] CLOSEST -> $CLOSEST"
 
 
 # 5) QC summary
-python ./scripts/qc_chunk_summary.py "$CLOSEST" || true
+python ./scripts/qc_chunk_summary.py "$CLOSEST" > "${CLOSEST%.csv}.qc.txt" 2>&1 || true
 echo "[INFO] Summary for $CLOSEST completed"
 
 
