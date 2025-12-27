@@ -40,7 +40,7 @@ def sep_arcsec(ra1, dec1, ra2, dec2) -> float:
 def safe_num(df: pd.DataFrame, name: str) -> pd.Series:
     """
     Return a numeric Series for column `name`.
-    If absent, return a Series of zeros (float).
+    If absent, return a Series of zeros (float) of the correct length.
     """
     if name in df.columns:
         return pd.to_numeric(df[name], errors="coerce")
@@ -106,17 +106,19 @@ def main():
     w2_ok = int((w2 >= 5).sum())
     any_snr_ok = int(((w1 >= 5) | (w2 >= 5)).sum())
 
-    # Quality flags
+    # Quality flags — handle missing column without creating length-mismatched Series
+    if "moon_masked" in df.columns:
+        moon_ok = int((df["moon_masked"].astype(str) == "00").sum())
+    else:
+        moon_ok = 0
+
     qf_ok = int((safe_num(df, "qual_frame") > 0).sum())
     qif_ok = int((safe_num(df, "qi_fact") > 0).sum())
     saa_ok = int((safe_num(df, "saa_sep") > 0).sum())
-    moon_ok = int((df.get("moon_masked", pd.Series([""], index=df.index)).astype(str) == "00").sum())
 
     # Print summary lines
     if total:
-        print(
-            f"[QC] file={infile}"
-        )
+        print(f"[QC] file={infile}")
         print(
             f"[QC] total_rows={total} matches_<=5arcsec={mcount} match_rate={mcount/total:.3f}"
         )
@@ -124,7 +126,6 @@ def main():
         print(f"[QC] file={infile}")
         print("[QC] total_rows=0 matches_<=5arcsec=0 match_rate=0.000")
 
-    # Format numeric prints robustly
     print(f"[QC] sep_arcsec median={med_sep:.3f} p95={p95_sep:.3f}")
     print(f"[QC] SNR: W1>=5={w1_ok} W2>=5={w2_ok} any>=5={any_snr_ok}")
     print(
