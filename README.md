@@ -286,7 +286,7 @@ export VASCO_CDS_PRECALL_SLEEP=1
 ```
 ### About partial xmatch coverage
 
-Partial xmatch coverage is expected near survey edges and does not indicate a pipeline error. This can happen with either PS1 or Gaia CDS. If any of the tile coordinates are outside PS1 AND Gaia coverage, the tile will be ignored downstream. If the coordinates are within PS1 or Gaia, but not both, the tile will be included in downstream. The effect on the science results is in any case negligible, especially after NeoWISE filtering.
+Partial xmatch coverage is expected near survey edges and does not indicate a pipeline error. This can happen with either PS1 or Gaia CDS. If any of the tile coordinates are outside PS1 AND Gaia coverage, the tile will be ignored downstream. If the coordinates are within PS1 or Gaia, but not both, the tile will be included in downstream. The effect on the science results is in any case negligible.
 
 ### Cleaning Up Non-POSS-I and Empty Tile Folders
 
@@ -357,6 +357,8 @@ After this your Parquet datasets should be OK.
 
 After all steps have completed for all tiles, copy vanish_neowise_nnnn.csv via http://svocats.cab.inta-csic.es/vanish-neowise/index.php?action=search to data/vasco-svo/ folder.
 
+**Note: (27-Dec-2025)** see the updated [workflow](WORKFLOW.md) If you want NeoWISE filtering, run all post-process steps manually according to workflow instructions. 
+
 Run this script 
 ```bash
 run_vasco_neowise_compare.sh
@@ -373,7 +375,7 @@ python ./scripts/merge_tile_catalogs.py --tiles-root ./data/tiles --tolerance-ar
 python scripts/compare_vasco_vs_optical.py --vasco data/vasco-cats/vanish_neowise_1765546031.csv \
   --radius-arcsec 2.0 --bin-deg 5 --chunk-size 20000 --out-dir data/local-cats/out/v3_match
 ```
-If everything went OK, you should find vasco_matched_to_optical.csv and vasco_still_ir_only.csv in the data folder.
+If everything went OK, you should find vasco_matched_to_optical.csv and vasco_still_ir_only.csv in the data folder. 
 
 ---
 ## Audit findings & Technical Notes
@@ -399,11 +401,16 @@ A post‑pipeline Step 0 script that fits a per‑tile polynomial plate solution
 Update to the latest version, rebuild docker and keep running. More reading [in the workflow doc](WORKFLOW.md)
 
 ### what to expect next
-NeoWISE filtering will be implemented when time permits. NeoWISE will filter out vast majority of sources so I won't implement it before more data has went through the pipeline and analysis.
-
+TBD
 </details>
 
 ## Recent Improvements
+
+### NEOWISE-R Single Exposure (L1b) Source Table deduction phase is ready
+
+First implemention was pushed to github on 27-Dec-2025 after tests passed. I'm currently in progress of running my dataset through this major deduction step and analyzing all data and reports. As usual, there might be some issues with larger dataset, but I'll publish possible fixes asap. 
+
+See [the worklow](WORKFLOW.md) for more details on how to use this feature.
 
 ### MNRAS 2022 filters taken into use 23-Dec-2025
 
