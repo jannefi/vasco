@@ -142,6 +142,28 @@ After processing all tiles, the pipeline now **skips creation of a monolithic ma
 
 ---
 
+### Step 1.5 (TAP async upload + sidecar + QC)
+```bash
+# 0) Extract positions (if not done yet)
+python ./scripts/extract_positions_for_neowise_se.py \
+  --parquet-root ./data/local-cats/_master_optical_parquet \
+  --out-dir ./data/local-cats/tmp/positions \
+  --chunk-size 1000
+
+# 1) TAP async in 8 parallel jobs (convert→upload→poll→closest→QC per chunk)
+make post15_async_chunks
+
+# 2) Write sidecar tree + global flags parquet
+make post15_sidecar
+
+# 3) Global QC summary
+python ./scripts/qc_global_summary.py \
+  ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
+  ./data/local-cats/_master_optical_parquet_irflags/neowise_se_global_summary.csv
+```
+
+---
+
 ### Step 2: Filter Unmatched Sources
 - **Script:** `./scripts/filter_unmatched_all.py --data-dir ./data --tol-cdss 0.05`
 - **Purpose:** For each tile, generates lists of unmatched sources for Gaia, PS1, and strict no-optical-counterpart lists.
