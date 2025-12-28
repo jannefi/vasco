@@ -108,7 +108,8 @@ def main():
 
     # Quality flags — handle missing column without creating length-mismatched Series
     if "moon_masked" in df.columns:
-        moon_ok = int((df["moon_masked"].astype(str) == "00").sum())
+        mm = df["moon_masked"].astype(str).str.strip()
+        moon_ok = int(((mm == "00") | (mm == "0") | (mm == "000")).sum())
     else:
         moon_ok = 0
 
