@@ -132,12 +132,13 @@ def main():
     w2_ok = int((w2 >= 5).sum())
     any_ok = int(((w1 >= 5) | (w2 >= 5)).sum())
 
-    # Quality flags (overall) — SAFE handling of moon_masked
+    # Quality flags (overall) — robust moon_masked handling
     qual_pos = int((safe_num(df, "qual_frame") > 0).sum())
-    qif_pos = int((safe_num(df, "qi_fact") > 0).sum())
-    saa_pos = int((safe_num(df, "saa_sep") > 0).sum())
+    qif_pos  = int((safe_num(df, "qi_fact")   > 0).sum())
+    saa_pos  = int((safe_num(df, "saa_sep")   > 0).sum())
     if "moon_masked" in df.columns:
-        moon_ok = int((df["moon_masked"].astype(str) == "00").sum())
+        mm = df["moon_masked"].astype(str).str.strip()
+        moon_ok = int(((mm == "00") | (mm == "0") | (mm == "000")).sum())
     else:
         moon_ok = 0
 
