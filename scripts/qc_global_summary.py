@@ -18,7 +18,7 @@ Inputs (from concat_flags_and_write_sidecar.py):
     - ir_match_strict (boolean)   # preferred if present
     - in_ra, in_dec (float32)
     - mjd, w1snr, w2snr (float32)
-    - qual_frame, qi_fact, saa_sep (Int32/float32)
+    - qual_frame, qi_fact, saa_sep (Int16/float32)
     - moon_masked (string)
     - ra_bin, dec_bin (Int32)     # optional for partition awareness
 
@@ -54,11 +54,13 @@ def compute_matches(df: pd.DataFrame, radius_arcsec: float) -> pd.DataFrame:
       otherwise fall back to 'sep_arcsec <= radius'.
     """
     if "ir_match_strict" in df.columns:
-        # Ensure proper boolean dtype
-        strict = df["ir_match_strict"]
-        # Some writers may store as object/string; coerce to bool safely:
-        strict = strict.replace({"True": True, "False": False}).astype("boolean")
-        return df[strict.fillna(False)]
+        strict = (
+            df["ir_match_strict"]
+            .replace({"True": True, "False": False})
+            .astype("boolean")
+            .fillna(False)
+        )
+        return df[strict]
     # Fallback on separation threshold
     if "sep_arcsec" not in df.columns:
         raise SystemExit("Missing 'sep_arcsec' in flags parquet and no 'ir_match_strict' available.")
@@ -89,7 +91,6 @@ def main():
 
     total_rows = int(len(df))
     if total_rows == 0:
-        # Write an empty-but-valid summary row
         summary = {
             "total_rows": 0,
             "strict_matches": 0,
@@ -120,23 +121,25 @@ def main():
     match_rate = (mcount / total_rows) if total_rows else 0.0
 
     # Separation stats (on strict matches only)
-    sep = pd.to_numeric(matches.get("sep_arcsec", pd.Series([], dtype="float64")), errors="coerce")
-    sep = sep.dropna()
+    sep = pd.to_numeric(matches.get("sep_arcsec", pd.Series([], dtype="float64")), errors="coerce").dropna()
     sep_median = float(sep.median()) if len(sep) else float("nan")
     sep_p95 = float(sep.quantile(0.95)) if len(sep) else float("nan")
 
-    # SNR bands (overall, to mirror chunk QC style)
+    # SNR bands (overall)
     w1 = safe_num(df, "w1snr")
     w2 = safe_num(df, "w2snr")
     w1_ok = int((w1 >= 5).sum())
     w2_ok = int((w2 >= 5).sum())
     any_ok = int(((w1 >= 5) | (w2 >= 5)).sum())
 
-    # Quality flags (overall)
+    # Quality flags (overall) — SAFE handling of moon_masked
     qual_pos = int((safe_num(df, "qual_frame") > 0).sum())
     qif_pos = int((safe_num(df, "qi_fact") > 0).sum())
     saa_pos = int((safe_num(df, "saa_sep") > 0).sum())
-    moon_ok = int((df.get("moon_masked", pd.Series([""], index=df.index)).astype(str) == "00").sum())
+    if "moon_masked" in df.columns:
+        moon_ok = int((df["moon_masked"].astype(str) == "00").sum())
+    else:
+        moon_ok = 0
 
     # MJD coverage (overall)
     mjd = safe_num(df, "mjd", default=float("nan")).dropna()
@@ -144,12 +147,9 @@ def main():
     mjd_max = float(mjd.max()) if len(mjd) else float("nan")
 
     # Partition awareness: rows that have ra_bin/dec_bin, and number of unique bin pairs
-    have_bins = df.get("ra_bin") is not None and df.get("dec_bin") is not None
-    if have_bins:
-        rb = df["ra_bin"]
-        db = df["dec_bin"]
+    if ("ra_bin" in df.columns) and ("dec_bin" in df.columns):
+        rb = df["ra_bin"]; db = df["dec_bin"]
         rows_with_bins = int((rb.notna() & db.notna()).sum())
-        # Count unique pairs among rows that have both
         pair_count = int(len(pd.DataFrame({"rb": rb, "db": db}).dropna().drop_duplicates()))
     else:
         rows_with_bins = 0
@@ -186,8 +186,7 @@ def main():
         md = (
             "# NEOWISE-SE Global QC Summary\n\n"
             f"- **Total rows**: {total_rows}\n"
-            f"- **Strict matches (≤ {args.radius_arcsec:.1f}\" )**: {mcount} "
-            f"({match_rate:.3%})\n"
+            f"- **Strict matches (≤ {args.radius_arcsec:.1f}\" )**: {mcount} ({match_rate:.3%})\n"
             f"- **Separation**: median={sep_median:.3f}\"  p95={sep_p95:.3f}\"\n"
             f"- **SNR bands**: W1≥5={w1_ok}, W2≥5={w2_ok}, any≥5={any_ok}\n"
             f"- **Quality**: qual_frame>0={qual_pos}, qi_fact>0={qif_pos}, saa_sep>0={saa_pos}, moon_masked='00'={moon_ok}\n"
