@@ -57,23 +57,21 @@ post15_all: post15_async_chunks post15_sidecar
 # --- Step 0: positions extraction 
 post15_s3_extract_positions:
 	$(PY) ./scripts/extract_positions_for_neowise_se.py \
-    	--parquet-root ./data/local-cats/_master_optical_parquet \
-        --out-dir      ./data/local-cats/tmp/positions \
-        --chunk-size   1000
-
+		--parquet-root ./data/local-cats/_master_optical_parquet \
+		--out-dir      ./data/local-cats/tmp/positions \        
+		--chunk-size   1000
 
 # -- Parallel per pixel across all selected years
 post15_s3_pixel:
-    $(PY) ./scripts/neowise_s3_sidecar.py \
+	$(PY) ./scripts/neowise_s3_sidecar.py \
         --years "$(NEOWISE_YEARS)" \
         --parallel pixel \
         --workers 8 \
         --radius-arcsec 5.0 \
         --clean-tmp
-
 # -- Parallel per year (and optionally per pixel within each year)
 post15_s3_year:
-    $(PY) ./scripts/neowise_s3_sidecar.py \
+	$(PY) ./scripts/neowise_s3_sidecar.py \
         --years "$(NEOWISE_YEARS)" \
         --parallel year \
         --workers 4 \
@@ -83,7 +81,7 @@ post15_s3_year:
 
 # -- QC-only (re-run summary after a previous sidecar run)
 post15_qc:
-    $(PY) ./scripts/qc_global_summary.py \
+	$(PY) ./scripts/qc_global_summary.py \
         ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
         ./data/local-cats/_master_optical_parquet_irflags/neowise_se_global_summary.csv
 
