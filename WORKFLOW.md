@@ -296,50 +296,33 @@ The VASCO pipeline is designed to be robust, but due to the nature of random sky
 
 
 
-## Appendix: typical data/tiles/<tileid> folder structure
 
+## Appendix: typical folder structures
 
-<details>
-<summary>Tree-style (best viewed on GitHub or GFM-compatible viewers)</summary>
-
-```text
-data/tiles/<tileid>/
+### Flat
+data/tiles//
 ├── raw/
-│   ├── <tileid>.fits
-│   └── <tileid>.fits.header.json
+├── catalogs/
+├── xmatch/
 ├── pass1.ldac
 ├── pass1.psf
 ├── pass2.ldac
-├── sex.out
-├── sex.err
-├── psfex.out
-├── psfex.err
+└── final_catalog.csv
+
+#### Sharded (new)
+data/tiles_by_sky/ra_bin=XX/dec_bin=YY//
+├── raw/
 ├── catalogs/
-│   ├── sextractor_pass1.csv
-│   ├── sextractor_pass2.csv
-│   ├── tile_catalog_pass2_raw.csv
-│   └── tile_catalog_pass2.csv
 ├── xmatch/
-│   ├── sex_gaia_xmatch_cdss.csv
-│   ├── sex_ps1_xmatch_cdss.csv
-│   ├── sex_gaia_xmatch_cdss_within5arcsec.csv
-│   ├── sex_ps1_xmatch_cdss_within5arcsec.csv
-│   ├── sex_gaia_unmatched_cdss.csv
-│   ├── sex_ps1_unmatched_cdss.csv
-│   ├── no_optical_counterparts.csv
-│   └── STEP4_CDS.log
-├── final_catalog.csv
-├── final_catalog.ecsv
-├── final_catalog.parquet
-├── RUN_SUMMARY.md
-├── qa_fwhm_image.png
-├── qa_mag_auto_hist.png
-├── qa_class_star_hist.png
-├── qa_snr_win_hist.png
-├── qa_mag_vs_snr.png
-├── qa_fwhm_vs_mag.png
-├── qa_ellipticity_vs_mag.png
-├── qa_class_star_vs_mag.png
+├── pass1.ldac
+├── pass1.psf
+├── pass2.ldac
+└── final_catalog.csv
+
+> All post‑pipeline and aggregation scripts are layout‑aware and scan both trees.
+
+
+
 
 
  

@@ -24,6 +24,7 @@ VASCO enables reproducible research on astronomical objects that have vanished f
 - [Troubleshooting](#troubleshooting)
 - [Audit Findings & Technical Notes](#audit-findings--technical-notes)
 - [Coverage Estimates](#coverage-estimates)
+- [Directory Layout and Sharded Tree](#directory-layout-and-sharded-tree)
 - [License & Contributions](#license--contributions)
 
 ---
@@ -464,6 +465,28 @@ Recent updates have made the VASCO pipeline more robust, reliable, and easier to
 - No changes are required for downstream scripts or analysis workflows.
 
 For more details on the cleaner script and how to maintain your data tree, see the [Cleaning Up Non-POSS-I and Empty Tile Folders](#cleaning-up-non-poss-i-and-empty-tile-folders) section.
+
+
+## Directory Layout and Sharded Tree
+
+Project supports two co‑existing tile trees:
+
+- **Flat**: `./data/tiles/tile-RA<deg>-DEC<deg>/...`
+- **Sharded (recommended for large datasets)**:
+  `./data/tiles_by_sky/ra_bin=<RAbin>/dec_bin=<DECbin>/tile-RA<deg>-DEC<deg>/...`
+
+**Bins** (default `bin_deg = 5°`):
+`ra_bin = floor(RA/5)`, `dec_bin = floor((Dec + 90)/5)`.
+
+**Why sharded?** On filesystems like NTFS or APFS, sharding reduces per‑directory entries and metadata contention, speeding up directory scans, globbing, and parallel IO. It scales cleanly to tens of thousands of tiles.
+
+**Adoption options**
+- Keep using `./data/tiles` and add new tiles to `./data/tiles_by_sky` (both are discovered automatically).
+- Migrate existing tiles to the sharded tree (helper script available).
+
+All layout‑aware utilities in `scripts/` automatically discover tiles in **both** trees. No configuration changes are required.
+
+**Tip:** For large datasets on NTFS/APFS, use the sharded tree `./data/tiles_by_sky/ra_bin=*/dec_bin=*/tile-*`. All bundled utilities scan both trees automatically, so you can adopt sharding incrementally without changing any commands.
 
 
 ## Coverage estimates 
