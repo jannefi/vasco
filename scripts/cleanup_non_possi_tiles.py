@@ -1,23 +1,8 @@
-
 #!/usr/bin/env python3
 """
 Cleanup non-POSS-I tiles and empty tile folders.
-
-Usage examples:
-  # Dry-run: log-based detection only
-  python scripts/cleanup_non_possi_tiles.py --tiles-root ./data/tiles --mode logs
-
-  # Dry-run: logs + empty checks, verbose list
-  python scripts/cleanup_non_possi_tiles.py --mode all --verbose
-
-  # Apply deletions permanently
-  python scripts/cleanup_non_possi_tiles.py --mode all --apply
-
-Notes:
-- Run this with the downloader idle to avoid races.
-- Header-sidecar checks are intentionally omitted: header JSONs exist only for valid POSSI-E tiles.
+Layout-aware: scans flat ./data/tiles and sharded ./data/tiles_by_sky.
 """
-
 import argparse
 import csv
 import re
@@ -29,9 +14,6 @@ from pathlib import Path
 TILES_GLOB = 'tile-RA*-DEC*'
 
 def is_empty_tile(tile_dir: Path) -> bool:
-    """A tile is empty if it has no raw FITS and no downstream artifacts.
-    Downstream artifacts heuristics: pass1.ldac, pass2.ldac, xmatch/, RUN_* files.
-    """
     raw_dir = tile_dir / 'raw'
     if raw_dir.exists() and any(raw_dir.glob('*.fits')):
         return False
@@ -47,7 +29,6 @@ def is_empty_tile(tile_dir: Path) -> bool:
     return True
 
 def has_serc_in_log(tile_dir: Path) -> bool:
-    """Return True if logs/download.log contains 'SERC' (case-insensitive)."""
     log_path = tile_dir / 'logs' / 'download.log'
     if not log_path.exists():
         return False
@@ -57,8 +38,18 @@ def has_serc_in_log(tile_dir: Path) -> bool:
         return False
     return re.search(r'\bSERC\b', text, flags=re.IGNORECASE) is not None
 
+def iter_tile_dirs_any(tiles_root: Path):
+    flat = tiles_root
+    if flat.exists():
+        for p in sorted(flat.glob(TILES_GLOB)):
+            if p.is_dir(): yield p
+    sharded = tiles_root.parent / 'tiles_by_sky'
+    if sharded.exists():
+        for p in sorted(sharded.glob('ra_bin=*/dec_bin=*/' + TILES_GLOB)):
+            if p.is_dir(): yield p
+
 def find_tiles(tiles_root: Path):
-    return sorted([p for p in tiles_root.glob(TILES_GLOB) if p.is_dir()])
+    return list(iter_tile_dirs_any(tiles_root))
 
 def write_ledger(csv_path: Path, rows):
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -72,7 +63,7 @@ def write_ledger(csv_path: Path, rows):
             w.writerow(r)
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description='Cleanup non-POSS-I and empty tile folders')
+    ap = argparse.ArgumentParser(description='Cleanup non-POSS-I and empty tile folders (layout-aware)')
     ap.add_argument('--tiles-root', default='./data/tiles', help='Root path containing tile folders')
     ap.add_argument('--mode', choices=['logs', 'empty', 'all'], default='logs', help='Detection mode')
     dz = ap.add_mutually_exclusive_group()
@@ -86,53 +77,43 @@ def main(argv=None):
     if not tiles_root.exists():
         print(f"[ERROR] tiles-root not found: {tiles_root}", file=sys.stderr)
         return 2
-
     tiles = find_tiles(tiles_root)
     if not tiles:
         print(f"[INFO] No tile folders under {tiles_root}")
         return 0
 
-    # detection
     flagged_logs = []
     flagged_empty = []
-
     for td in tiles:
         if args.mode in ('logs', 'all') and has_serc_in_log(td):
             flagged_logs.append(td)
         if args.mode in ('empty', 'all') and is_empty_tile(td):
             flagged_empty.append(td)
 
-    # union
     union_set = set(flagged_logs) | set(flagged_empty)
     union = sorted(union_set)
 
-    # summary
     print(f"[SUMMARY] Tiles flagged via logs (SERC): {len(flagged_logs)}")
-    print(f"[SUMMARY] Tiles flagged via empty:       {len(flagged_empty)}")
-    print(f"[SUMMARY] Union (unique tile-ids):       {len(union)}")
+    print(f"[SUMMARY] Tiles flagged via empty: {len(flagged_empty)}")
+    print(f"[SUMMARY] Union (unique tile-ids): {len(union)}")
 
     if args.verbose:
         for p in union:
             reason = []
-            if p in flagged_logs:
-                reason.append('logs')
-            if p in flagged_empty:
-                reason.append('empty')
-            print(f"  - {p.name} (reason={'+'.join(reason)})")
+            if p in flagged_logs: reason.append('logs')
+            if p in flagged_empty: reason.append('empty')
+            print(f" - {p.name} (reason={'+' .join(reason)})")
 
     if args.dry_run and not args.apply:
         print("[DRY-RUN] No changes made. Use --apply to delete.")
         return 0
 
-    # apply deletions
     rows = []
     now = datetime.now(timezone.utc).isoformat()
     for p in union:
         reason = []
-        if p in flagged_logs:
-            reason.append('logs')
-        if p in flagged_empty:
-            reason.append('empty')
+        if p in flagged_logs: reason.append('logs')
+        if p in flagged_empty: reason.append('empty')
         r = '+'.join(reason) if reason else 'unknown'
         try:
             shutil.rmtree(p)
@@ -142,7 +123,6 @@ def main(argv=None):
             print(f"[ERROR] Failed to delete {p}: {e}", file=sys.stderr)
             rows.append({'tile_id': p.name, 'reason': r, 'action': f'error:{e}', 'timestamp': now})
 
-    # ledger
     if rows:
         write_ledger(Path(args.ledger), rows)
         print(f"[LEDGER] Recorded {len(rows)} actions to {args.ledger}")
@@ -150,4 +130,3 @@ def main(argv=None):
 
 if __name__ == '__main__':
     raise SystemExit(main())
-
