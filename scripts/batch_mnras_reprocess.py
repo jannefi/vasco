@@ -1,16 +1,23 @@
-
+#!/usr/bin/env python3
 import subprocess
 from pathlib import Path
-import sys
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-
 N_PARALLEL = int(os.environ.get('N_PARALLEL', '4'))
+TILES_PARENT = Path('./data')
 
-TILES_ROOT = Path('./data/tiles')
-LOGS_DIR = Path('./logs')
-LOGS_DIR.mkdir(exist_ok=True)
+def iter_tile_dirs_any(parent: Path):
+    flat = parent / 'tiles'
+    if flat.exists():
+        for p in sorted(flat.glob('tile-RA*-DEC*')):
+            if p.is_dir(): yield p
+    sharded = parent / 'tiles_by_sky'
+    if sharded.exists():
+        for p in sorted(sharded.glob('ra_bin=*/dec_bin=*/tile-RA*-DEC*')):
+            if p.is_dir(): yield p
+
+LOGS_DIR = Path('./logs'); LOGS_DIR.mkdir(exist_ok=True)
 LOG_FILE = LOGS_DIR / 'mnras_batch.log'
 DONE_MARKER = 'MNRAS_DONE.flag'
 
@@ -22,39 +29,30 @@ def process_tile(tile_dir: Path):
             msg = f"[SKIP] {tile_dir} already processed."
             print(msg)
             return msg
-
         log_lines.append(f"\n=== Processing {tile_dir} ===")
-        # Step 4: xmatch (CDS backend)
-        log_lines.append("  [step4-xmatch]")
+        log_lines.append(" [step4-xmatch]")
         subprocess.run([
             'python', '-m', 'vasco.cli_pipeline', 'step4-xmatch',
             '--workdir', str(tile_dir),
             '--xmatch-backend', 'cds',
             '--xmatch-radius-arcsec', '5'
         ], check=True)
-        log_lines.append("    done.")
-
-        # Step 5: filter-within5
-        log_lines.append("  [step5-filter-within5]")
+        log_lines.append(" done.")
+        log_lines.append(" [step5-filter-within5]")
         subprocess.run([
             'python', '-m', 'vasco.cli_pipeline', 'step5-filter-within5',
             '--workdir', str(tile_dir)
         ], check=True)
-        log_lines.append("    done.")
-
-        # Step 6: summarize
-        log_lines.append("  [step6-summarize]")
+        log_lines.append(" done.")
+        log_lines.append(" [step6-summarize]")
         subprocess.run([
             'python', '-m', 'vasco.cli_pipeline', 'step6-summarize',
             '--workdir', str(tile_dir)
         ], check=True)
-        log_lines.append("    done.")
-
-        # Write marker file last (atomic completion)
+        log_lines.append(" done.")
         marker.write_text("MNRAS batch completed successfully.\n")
         log_lines.append(f"=== Finished {tile_dir} ===")
         return '\n'.join(log_lines)
-
     except subprocess.CalledProcessError as e:
         msg = f"[ERROR] {tile_dir}: {e}"
         log_lines.append(msg)
@@ -65,9 +63,8 @@ def process_tile(tile_dir: Path):
         return '\n'.join(log_lines)
 
 def main():
-    tile_dirs = sorted(TILES_ROOT.glob('tile-RA*-DEC*'))
+    tile_dirs = list(iter_tile_dirs_any(TILES_PARENT))
     print(f"Found {len(tile_dirs)} tiles.")
-
     with ThreadPoolExecutor(max_workers=N_PARALLEL) as executor, LOG_FILE.open('a') as logf:
         futures = {executor.submit(process_tile, tile_dir): tile_dir for tile_dir in tile_dirs}
         for future in as_completed(futures):
@@ -76,5 +73,5 @@ def main():
             logf.write(result + '\n')
             logf.flush()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
