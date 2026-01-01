@@ -482,7 +482,7 @@ Project supports two co‑existing tile trees:
 
 **Adoption options**
 - Keep using `./data/tiles` and add new tiles to `./data/tiles_by_sky` (both are discovered automatically).
-- Migrate existing tiles to the sharded tree (helper script available).
+- Migrate existing tiles to the sharded tree using `.scripts/migrate_tiles_to_sharded.py`. It takes only two parameters: --max-tiles (default=all) and --go (script doesn't change anything unless you say go).
 
 All layout‑aware utilities in `scripts/` automatically discover tiles in **both** trees. No configuration changes are required.
 
