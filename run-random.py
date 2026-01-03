@@ -1,39 +1,46 @@
-
 #!/usr/bin/env python3
 """
 VASCO runner — dual-layout aware (legacy flat OR RA/Dec sharded)
 
+NEW (v0.9 — overlap-aware randomizer)
+-------------------------------------
+• Adds an optional *overlap-aware* mode for `download_loop` that rejects random
+  coordinates if the resulting 30' tile would **heavily overlap** an existing tile
+  recorded in the tiles registry.
+• Uses a light-weight arc-length approximation consistent with 30' square tiles:
+  - Each tile is modeled as an axis-aligned rectangle of width=0.5° (RA arc) and
+    height=0.5° (Dec), centered at (RA, Dec).
+  - RA arc separation uses cos(mean_dec) scaling to account for longitude
+    convergence (sufficient for 30' tiles).
+• Default behavior keeps your current flow; enable overlap avoidance via CLI.
+
 Modes:
-  1) download_loop         – continuously run step1-download until interrupted
-  2) steps                 – sweep tiles and run requested steps (2..6) where missing
-  3) download_from_tiles   – scan existing tiles and re-run step1 per tile
-  4) inspect               – one-off step1 download at given RA/Dec
+ 1) download_loop – continuously run step1-download until interrupted
+ 2) steps – sweep tiles and run requested steps (2..6) where missing
+ 3) download_from_tiles – scan existing tiles and re-run step1 per tile
+ 4) inspect – one-off step1 download at given RA/Dec
 
-Layout control (works in WSL with repo-root symlink ./data -> /mnt/d/vasco/data):
-  * --tiles-root   base dir for datasets (default: env VASCO_TILES_ROOT or ./data)
-  * --layout       auto | legacy | sharded (default: auto)
-    - auto: if ./data/tiles_by_sky exists => sharded, else legacy
-    - legacy:  ./data/tiles/<tileid>/
-    - sharded: ./data/tiles_by_sky/ra_bin=RRR/dec_bin=SS/<tileid>/
+Layout control:
+  * --tiles-root base dir for datasets (default: env VASCO_TILES_ROOT or ./data)
+  * --layout auto|legacy|sharded (default: auto)
+     - auto: if ./data/tiles_by_sky exists => sharded, else legacy
+     - legacy: ./data/tiles/<tileid>/
+     - sharded: ./data/tiles_by_sky/ra_bin=RRR/dec_bin=SS/<tileid>/
 
-This keeps old users unbroken while letting NTFS/USB users benefit from sharding.
 """
-
 import os, sys, json, random, logging, time, argparse, math
 from pathlib import Path
 from subprocess import Popen, PIPE, STDOUT
 
-# ---------- defaults & logging ----------
+# ---------------------- defaults & logging ----------------------
 DEFAULT_TILES_BASE = os.environ.get("VASCO_TILES_ROOT", "./data")
-DEFAULT_LAYOUT     = os.environ.get("VASCO_TILES_LAYOUT", "auto")  # auto|legacy|sharded
-
+DEFAULT_LAYOUT = os.environ.get("VASCO_TILES_LAYOUT", "auto")  # auto|legacy|sharded
 SURVEY = "dss1-red"
 PIXEL_SCALE = 1.7
 TILE_SIZE_ARCMIN = 30
 LOG_FILE = "logs/run_random.log"
 RA_MIN, RA_MAX = 0, 360
 DEC_MIN, DEC_MAX = -90, 90
-
 os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
@@ -47,9 +54,10 @@ REPO_ROOT = Path(__file__).resolve().parent
 BASE_ENV = os.environ.copy()
 BASE_ENV['PYTHONPATH'] = str(REPO_ROOT)
 
-# ---------- tiles registry (unchanged) ----------
+# -------------------------- tiles registry ----------------------
 import csv
 REGISTRY_PATH = Path("./data/metadata/tiles_registry.csv")
+REGISTRY_DEDUP_PATH = Path("./data/metadata/tiles_registry_dedup.csv")
 REGISTRY_FIELDS = (
     "tile_id", "ra_deg", "dec_deg", "survey", "size_arcmin", "pixel_scale_arcsec",
     "status", "downloaded_utc", "source", "notes"
@@ -97,13 +105,14 @@ def load_seen_from_registry(csv_path: Path, key_fields=REGISTRY_KEY_FIELDS) -> s
     if csv_path.exists() and csv_path.stat().st_size > 0:
         with csv_path.open("r", newline="", encoding="utf-8") as f:
             r = csv.DictReader(f)
-            has_all = all(k in r.fieldnames for k in key_fields)
+            has_all = all(k in (r.fieldnames or []) for k in key_fields)
             if has_all:
                 for row in r:
                     seen.add(tuple(row[k] for k in key_fields))
     return seen
 
-# ---------- tile-id & layout helpers ----------
+# ----------------------- tile-id & layout helpers -----------------------
+
 def tile_id_from_coords(ra_deg: float, dec_deg: float, nd: int = 3) -> str:
     return f"tile-RA{ra_deg:.{nd}f}-DEC{dec_deg:+.{nd}f}"
 
@@ -128,10 +137,6 @@ def _format_dec_bin(b: int) -> str:
     return f"{'+' if b >= 0 else '-'}{abs(b):02d}"
 
 def compute_workdir_for_tile(base_dir: Path, layout: str, ra: float, dec: float, tile_id: str) -> Path:
-    """
-    base_dir: path to ./data (symlink to /mnt/d/vasco/data in your WSL setup)
-    layout:   'auto'|'legacy'|'sharded'
-    """
     base = Path(base_dir)
     if layout == "auto":
         layout = "sharded" if (base / "tiles_by_sky").exists() else "legacy"
@@ -142,7 +147,8 @@ def compute_workdir_for_tile(base_dir: Path, layout: str, ra: float, dec: float,
     db = _dec_bin_5(dec)
     return base / "tiles_by_sky" / f"ra_bin={rb:03d}" / f"dec_bin={_format_dec_bin(db)}" / tile_id
 
-# ---------- subprocess runner ----------
+# ------------------------- subprocess runner ---------------------------
+
 def run_and_stream(cmd: list[str]) -> int:
     log.info("Running: %s", ' '.join(cmd))
     proc = Popen(cmd, stdout=PIPE, stderr=STDOUT, text=True, bufsize=1, env=BASE_ENV)
@@ -154,7 +160,8 @@ def run_and_stream(cmd: list[str]) -> int:
 def has_raw_fits(tile_dir: Path) -> bool:
     return any((tile_dir / 'raw').glob('*.fits'))
 
-# ---------- steps logic ----------
+# --------------------- steps logic (unchanged) -------------------------
+
 def _needs_step5(xdir: Path) -> bool:
     sources = sorted(list(xdir.glob('sex_*_xmatch.csv')) + list(xdir.glob('sex_*_xmatch_cdss.csv')))
     if not sources:
@@ -165,18 +172,13 @@ def _needs_step5(xdir: Path) -> bool:
             return True
     return False
 
-# ---------- Tiles enumeration (adapter) ----------
-# We use the adapter you added earlier so scripts see both layouts transparently.
+# --------------------- Tiles enumeration (adapter) ---------------------
 try:
     from vasco.io.tiles_root_adapter import TilesAdapter
 except Exception:
-    TilesAdapter = None  # will fallback to legacy-only scan if adapter is missing
+    TilesAdapter = None  # fallback to legacy-only scan if adapter is missing
 
 def _iter_all_tiles(tiles_base: Path) -> list[Path]:
-    """
-    Return a list of tile directories across both layouts under tiles_base (./data).
-    Requires TilesAdapter; if missing, falls back to legacy ./data/tiles only.
-    """
     tiles_base = Path(tiles_base)
     out: list[Path] = []
     if TilesAdapter is not None:
@@ -188,15 +190,103 @@ def _iter_all_tiles(tiles_base: Path) -> list[Path]:
             out = sorted([p for p in legacy.glob('tile-RA*-DEC*') if p.is_dir()], key=lambda p: p.name)
     return out
 
-# ---------- commands ----------
+# ---------------------- Overlap-aware randomizer -----------------------
+# Tile rectangle: width_x = 0.5 deg (RA *cos(mean_dec)), height_y = 0.5 deg (Dec)
+HALF_SIDE_DEG = TILE_SIZE_ARCMIN / 60.0 / 2.0  # 30' => 0.25 deg
+TILE_AREA_DEG2 = (HALF_SIDE_DEG * 2.0) * (HALF_SIDE_DEG * 2.0)  # == 0.25
+
+class OverlapIndex:
+    """In-memory index of existing tiles to evaluate overlap quickly."""
+    def __init__(self, rows: list[tuple[float,float]]):
+        # bin by 5-degree RA/Dec for coarse filtering
+        self.by_bin = {}
+        for ra, dec in rows:
+            rb = _ra_bin_5(ra)
+            db = _dec_bin_5(dec)
+            self.by_bin.setdefault((rb, db), []).append((ra, dec))
+
+    @staticmethod
+    def _ra_sep_deg(ra1: float, ra2: float) -> float:
+        # shortest separation on circle
+        d = ((ra2 - ra1 + 180.0) % 360.0) - 180.0
+        return abs(d)
+
+    @staticmethod
+    def overlap_fraction(ra1: float, dec1: float, ra2: float, dec2: float) -> float:
+        # RA arc separation at mean dec; each tile has 0.5 deg arc width
+        mean_dec = (dec1 + dec2) * 0.5
+        cos_m = math.cos(math.radians(mean_dec))
+        if cos_m <= 0:  # polar edge cases; safe guard
+            cos_m = 1e-6
+        sep_ra_arc = OverlapIndex._ra_sep_deg(ra1, ra2) * cos_m
+        sep_dec = abs(dec2 - dec1)
+        overlap_x = max(0.0, (HALF_SIDE_DEG * 2.0) - sep_ra_arc)
+        overlap_y = max(0.0, (HALF_SIDE_DEG * 2.0) - sep_dec)
+        area = overlap_x * overlap_y
+        return area / TILE_AREA_DEG2  # [0..1]
+
+    def too_overlapping(self, ra: float, dec: float, max_frac: float) -> bool:
+        # check bins within ±10 deg RA and ±10 deg Dec (coarse)
+        rb = _ra_bin_5(ra); db = _dec_bin_5(dec)
+        cand_bins = []
+        for r_off in (-10, -5, 0, 5, 10):
+            r_key = ((rb + r_off) % 360)
+            for d_off in (-10, -5, 0, 5, 10):
+                cand_bins.append((r_key, db + d_off))
+        for key in cand_bins:
+            for (era, edec) in self.by_bin.get(key, []):
+                frac = OverlapIndex.overlap_fraction(era, edec, ra, dec)
+                if frac >= max_frac:
+                    return True
+        return False
+
+
+def build_overlap_index(registry_csv: Path, survey: str, size_arcmin: float, pixel_scale: float) -> OverlapIndex:
+    path = REGISTRY_DEDUP_PATH if REGISTRY_DEDUP_PATH.exists() else registry_csv
+    rows = []
+    if path.exists() and path.stat().st_size > 0:
+        with path.open('r', encoding='utf-8', newline='') as f:
+            r = csv.DictReader(f)
+            for row in r:
+                try:
+                    if row.get('survey', '').strip() != survey:
+                        continue
+                    if float(row.get('size_arcmin', 0.0)) != float(size_arcmin):
+                        continue
+                    # allow small float differences for pixel scale
+                    ps = float(row.get('pixel_scale_arcsec', 0.0))
+                    if abs(ps - float(pixel_scale)) > 1e-6:
+                        continue
+                    ra = float(row.get('ra_deg', ''))
+                    dec = float(row.get('dec_deg', ''))
+                    rows.append((ra, dec))
+                except Exception:
+                    continue
+    return OverlapIndex(rows)
+
+# ------------------------------ commands -------------------------------
+
 def cmd_download_loop(args: argparse.Namespace) -> int:
     log.info("Starting download loop — CTRL+C to stop.")
     tiles_base = Path(args.tiles_root or DEFAULT_TILES_BASE)
     layout = (args.layout or DEFAULT_LAYOUT).strip().lower()
+    size = float(args.size_arcmin or TILE_SIZE_ARCMIN)
+    px = float(args.pixel_scale_arcsec or PIXEL_SCALE)
+    survey = args.survey or SURVEY
+
+    # seen ledger to avoid exact duplicates
     seen = load_seen_from_registry(REGISTRY_PATH)
+
+    # optional overlap-aware index
+    avoid_overlap = bool(getattr(args, 'avoid_overlap', False))
+    max_frac = float(getattr(args, 'overlap_max_frac', 0.5))
+    overlap_idx = build_overlap_index(REGISTRY_PATH, survey, size, px) if avoid_overlap else None
+
     planned = 0; errors = 0
     limit = int(args.limit or 0)
     max_errors = int(args.max_errors or 0)
+    sleep_s = float(args.sleep_sec or 15)
+    max_attempts = int(getattr(args, 'overlap_max_attempts', 2000))
 
     try:
         while True:
@@ -205,20 +295,34 @@ def cmd_download_loop(args: argparse.Namespace) -> int:
             if max_errors and errors >= max_errors:
                 log.warning("Reached max_errors=%s. Stopping.", max_errors); return 1
 
-            ra = random.uniform(RA_MIN, RA_MAX)
-            dec = random.uniform(DEC_MIN, DEC_MAX)
-            tid = tile_id_from_coords(ra, dec)
-            size = float(args.size_arcmin or TILE_SIZE_ARCMIN)
-            px   = float(args.pixel_scale_arcsec or PIXEL_SCALE)
-            survey = args.survey or SURVEY
-            key = (tid, survey, str(size), str(px))
+            attempts = 0
+            while True:
+                ra = random.uniform(RA_MIN, RA_MAX)
+                dec = random.uniform(DEC_MIN, DEC_MAX)
+                tid = tile_id_from_coords(ra, dec)
+                key = (tid, survey, str(size), f"{px:.2f}")
+
+                if key in seen:
+                    attempts += 1
+                    if attempts % 200 == 0:
+                        log.info("[RETRY] %s — seen in registry; attempts=%d", tid, attempts)
+                    if attempts >= max_attempts:
+                        log.info("[GIVEUP] using seen tile after %d attempts", attempts)
+                        break
+                    continue
+
+                if avoid_overlap and overlap_idx and overlap_idx.too_overlapping(ra, dec, max_frac):
+                    attempts += 1
+                    if attempts % 200 == 0:
+                        log.info("[RETRY] %s — overlaps >= %.2f; attempts=%d", tid, max_frac, attempts)
+                    if attempts >= max_attempts:
+                        log.info("[GIVEUP] overlap gate after %d attempts; accepting candidate", attempts)
+                        break
+                    continue
+                # accept candidate
+                break
 
             workdir_tile = compute_workdir_for_tile(tiles_base, layout, ra, dec, tid)
-
-            if key in seen:
-                log.info("[SKIP] %s — seen in registry for %s/%s/%s", tid, survey, size, px)
-                time.sleep(float(args.sleep_sec or 15)); continue
-
             cmd = [
                 "python","-u","-m","vasco.cli_pipeline","step1-download",
                 "--ra", str(ra), "--dec", str(dec),
@@ -249,14 +353,19 @@ def cmd_download_loop(args: argparse.Namespace) -> int:
                     try:
                         append_row_to_registry(REGISTRY_PATH, row)
                         seen.add(key)
+                        if overlap_idx:
+                            # update index so subsequent picks avoid the fresh tile too
+                            overlap_idx.by_bin.setdefault((_ra_bin_5(ra), _dec_bin_5(dec)), []).append((ra, dec))
                         log.info("[LEDGER] appended %s to tiles_registry.csv", tid)
                     except Exception as e:
                         log.warning("[LEDGER] append failed for %s: %s", tid, e)
-                planned += 1
-            time.sleep(float(args.sleep_sec or 15))
+            planned += 1
+            time.sleep(sleep_s)
     except KeyboardInterrupt:
         log.info("Interrupted by user. Exiting download loop.")
         return 0
+
+# ---------------------------- other commands ---------------------------
 
 def cmd_steps(args: argparse.Namespace) -> int:
     raw = (args.steps or '').strip()
@@ -276,7 +385,6 @@ def cmd_steps(args: argparse.Namespace) -> int:
     tiles = _iter_all_tiles(tiles_base)
     if not tiles:
         log.info("No tiles found under %s (legacy or sharded). Run download_loop first.", tiles_base); return 0
-
     total_runs = 0; limit = int(args.limit or 0)
     for tile_dir in tiles:
         for step in steps:
@@ -298,7 +406,7 @@ def cmd_steps(args: argparse.Namespace) -> int:
                 ]
                 if (args.xmatch_backend or 'cds') == 'cds':
                     if args.cds_gaia_table: cmd += ["--cds-gaia-table", args.cds_gaia_table]
-                    if args.cds_ps1_table: cmd += ["--cds-ps1-table",  args.cds_ps1_table]
+                    if args.cds_ps1_table: cmd += ["--cds-ps1-table", args.cds_ps1_table]
             elif step == 'step5-filter-within5':
                 xdir = tile_dir / 'xmatch'
                 if not xdir.exists() or not _needs_step5(xdir):
@@ -312,7 +420,6 @@ def cmd_steps(args: argparse.Namespace) -> int:
                 ]
             else:
                 continue
-
             log.info("[RUN] %s -> %s", step, tile_dir.name)
             rc = run_and_stream(cmd)
             if rc != 0:
@@ -320,18 +427,14 @@ def cmd_steps(args: argparse.Namespace) -> int:
             total_runs += 1
             if limit and total_runs >= limit:
                 log.info("Reached limit=%s. Stopping.", limit); return 0
-
     log.info("Steps completed. Total step invocations: %s", total_runs); return 0
 
+
 def cmd_download_from_tiles(args: argparse.Namespace) -> int:
-    """
-    Scan existing tiles from BOTH layouts under --tiles-root and re-run Step 1 per tile.
-    """
     tiles_base = Path(args.tiles_root or DEFAULT_TILES_BASE)
     tiles = _iter_all_tiles(tiles_base)
     if not tiles:
         log.info("No tiles found under %s", tiles_base); return 0
-
     planned = len(tiles); attempted = 0; downloaded = 0
     for tile_dir in tiles:
         parsed = _parse_ra_dec_from_tile(tile_dir.name)
@@ -339,7 +442,6 @@ def cmd_download_from_tiles(args: argparse.Namespace) -> int:
             log.warning("Skipping folder with unexpected name: %s", tile_dir.name); continue
         ra, dec = parsed
         raw_dir = tile_dir / 'raw'
-        # policy
         if args.force:
             for f in list(raw_dir.glob('*.fits*')) + list(raw_dir.glob('*.fits.header.json')):
                 try: f.unlink()
@@ -348,7 +450,6 @@ def cmd_download_from_tiles(args: argparse.Namespace) -> int:
         elif args.only_missing and has_raw_fits(tile_dir):
             log.info("[SKIP] %s — raw FITS present; --only-missing", tile_dir.name)
             continue
-
         cmd = [
             "python","-u","-m","vasco.cli_pipeline","step1-download",
             "--ra",str(ra),"--dec",str(dec),
@@ -364,26 +465,26 @@ def cmd_download_from_tiles(args: argparse.Namespace) -> int:
             log.warning("Step1 failed for %s (rc=%s)", tile_dir.name, rc)
         if has_raw_fits(tile_dir):
             downloaded += 1
-
         if args.sleep_sec:
             time.sleep(float(args.sleep_sec))
         if args.limit and attempted >= int(args.limit):
             break
-
     log.info("[DONE] Tiles planned=%d, attempted=%d, downloaded=%d", planned, attempted, downloaded)
     return 0
 
+# ------------------------------- main ----------------------------------
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description='VASCO runner (dual-layout; staging-aware)')
+    ap = argparse.ArgumentParser(description='VASCO runner (dual-layout; staging-aware; overlap-aware randomizer)')
     sub = ap.add_subparsers(dest='cmd')
 
-    # shared knobs
     def add_shared(p):
         p.add_argument('--tiles-root', default=DEFAULT_TILES_BASE,
                        help='Base data directory (default: env VASCO_TILES_ROOT or ./data)')
         p.add_argument('--layout', choices=['auto','legacy','sharded'], default=DEFAULT_LAYOUT,
                        help='Tile layout to target when creating new tiles (default: auto)')
 
+    # download loop
     dl = sub.add_parser('download_loop', help='Continuously download tiles (step1) until interrupted')
     add_shared(dl)
     dl.add_argument('--sleep-sec', type=float, default=15)
@@ -393,8 +494,16 @@ def main(argv: list[str] | None = None) -> int:
     dl.add_argument('--pixel-scale', dest='pixel_scale_arcsec', type=float, default=PIXEL_SCALE)
     dl.add_argument('--limit', type=int, default=0, help='Max successful downloads before stop (0 = unlimited)')
     dl.add_argument('--max-errors', type=int, default=0, help='Stop after this many step1 failures (0 = unlimited)')
+    # NEW overlap controls
+    dl.add_argument('--avoid-overlap', action='store_true', default=False,
+                    help='Reject candidates whose tiles overlap existing ones beyond threshold')
+    dl.add_argument('--overlap-max-frac', type=float, default=0.5,
+                    help='Max allowed area fraction overlap with any existing tile (default: 0.5)')
+    dl.add_argument('--overlap-max-attempts', type=int, default=2000,
+                    help='Max random retries before accepting a candidate anyway (default: 2000)')
     dl.set_defaults(func=cmd_download_loop)
 
+    # steps
     st = sub.add_parser('steps', help='Scan tiles (both layouts) and run requested steps where missing')
     add_shared(st)
     st.add_argument('--steps', required=True)
@@ -408,6 +517,7 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument('--hist-col', default='FWHM_IMAGE')
     st.set_defaults(func=cmd_steps)
 
+    # download_from_tiles
     bt = sub.add_parser('download_from_tiles', help='Re-download Step 1 for existing tiles (both layouts)')
     add_shared(bt)
     group = bt.add_mutually_exclusive_group()
@@ -422,13 +532,15 @@ def main(argv: list[str] | None = None) -> int:
     bt.add_argument('--limit', type=int, default=0)
     bt.set_defaults(func=cmd_download_from_tiles)
 
+    # inspect
     ins = sub.add_parser('inspect', help='One-off Step 1 download at given RA/Dec')
     add_shared(ins)
     ins.add_argument('--ra', required=True, type=float)
     ins.add_argument('--dec', required=True, type=float)
     ins.add_argument('--size-arcmin', type=float, default=10.0)  # inspection
-    ins.add_argument('--survey', default=SURVEY)                  # dss1-red
+    ins.add_argument('--survey', default=SURVEY)  # dss1-red
     ins.add_argument('--pixel-scale-arcsec', dest='pixel_scale_arcsec', type=float, default=PIXEL_SCALE)
+
     def _run_inspect(a):
         ra, dec = float(a.ra), float(a.dec)
         tid = tile_id_from_coords(ra, dec)
@@ -442,6 +554,7 @@ def main(argv: list[str] | None = None) -> int:
             "--pixel-scale-arcsec", str(a.pixel_scale_arcsec),
             "--workdir", str(workdir),
         ])
+
     ins.set_defaults(func=_run_inspect)
 
     args = ap.parse_args(argv)
