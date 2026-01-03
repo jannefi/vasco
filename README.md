@@ -407,6 +407,15 @@ TBD
 
 ## Recent Improvements
 
+### Overlap aware download randomizer
+
+You can now make the random tile downloader avoid overlapping areas. See [release notes](RELEASE_NOTES.md)
+
+### Two new visualization scripts
+
+- `scripts/check_tile_plate_edge.py` plots tile location on plate. See [script readme](./scripts/README-tile-plate-edge.md)
+- `scripts/render_plate_tile_coverage.py` draws tiles on each plate. See [script readme](./scripts/README-plate-coverage.md)
+
 ### NEOWISE-R Single Exposure (L1b) Source Table deduction phase is ready
 
 First implemention was pushed to github on 27-Dec-2025 after tests passed. I'm currently in progress of running my dataset through this major deduction step and analyzing all data and reports. As usual, there might be some issues with larger dataset, but I'll publish possible fixes asap. 
