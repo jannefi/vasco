@@ -408,6 +408,9 @@ TBD
 
 ## Recent Improvements
 
+### MNRAS spike boundary & morphology - 2026-01-04
+- See release notes for details
+
 ### NEOWISE delta & healthcheck
 
 - For a faster, incremental NEOWISE run, see `docs/RUNBOOK_NEOWISE_DELTA.md`.

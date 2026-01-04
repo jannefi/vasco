@@ -15,6 +15,13 @@ THETA_IMAGE
 ELONGATION
 FWHM_IMAGE
 
+# MNRAS 2022 needs
+XMIN_IMAGE
+XMAX_IMAGE
+YMIN_IMAGE
+YMAX_IMAGE
+
+
 # sky coordinates (degrees) — provide multiple variants
 X_WORLD
 Y_WORLD
@@ -35,6 +42,11 @@ CLASS_STAR
 ELLIPTICITY
 KRON_RADIUS
 BACKGROUND
+
+# PSF-aware features
+SPREAD_MODEL
+SPREADERR_MODEL
+
 
 # --- NEW for PSFEx required inputs ---
 # S/N in Gaussian window

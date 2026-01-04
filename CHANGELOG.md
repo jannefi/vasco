@@ -1,6 +1,18 @@
 # Changelog
 All notable changes to this project will be documented in this file.
 
+## [0.9.2] — MNRAS filter fixes - 2026-01-04
+
+### Changed
+- `vasco/mnras/spikes.py`: line-rule comparator uses strict `<` to keep equality
+  on the Rmag–distance line; const-rule remains `<=`. Fixes boundary behavior
+  for MNRAS-aligned spikes.
+
+### Added
+- `WORKFLOW.md`: explicit SExtractor `.param` block listing `XMIN_IMAGE`,
+  `XMAX_IMAGE`, `YMIN_IMAGE`, `YMAX_IMAGE` and other required fields; reiterated
+  extraction-time `FLAGS==0 & SNR_WIN>30`
+
 ## v0.06.9 (Patch: CLI skip non-POSS tiles)
 - `one2pass`: wrap STScI download call; on strict POSS enforcement failure (non-POSS plate),
   write `RUN_MISSING.json`/`RUN_OVERVIEW.md` and exit cleanly without aborting the run.
