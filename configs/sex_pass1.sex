@@ -1,7 +1,7 @@
 # SExtractor pass 1 (pre-PSFEx)
 CATALOG_NAME     pass1.ldac
 CATALOG_TYPE     FITS_LDAC
-PARAMETERS_NAME  default.param
+PARAMETERS_NAME  sex_default.param
 FILTER           N
 DETECT_TYPE      CCD
 DETECT_MINAREA   5
@@ -25,3 +25,4 @@ WEIGHT_TYPE      NONE
 CHECKIMAGE_TYPE  NONE
 VERBOSE_TYPE     QUIET
 MAG_ZEROPOINT    21.1
+PSF_NAME         ""

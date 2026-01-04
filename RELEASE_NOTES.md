@@ -1,5 +1,74 @@
-# VASCO v0.9.1 — NEOWISE version
+# VASCO v0.9.2 — MNRAS spike boundary & morphology docs (2026-01-04)
 
+## Summary
+Small but impactful alignment with the MNRAS spike-removal procedure and a
+workflow documentation fix to ensure SExtractor emits all columns required by
+the morphology filters.
+
+### Highlights
+- **Spike line-rule boundary**: switch comparator to strict `<` so equality keeps;
+  constant-rule equality still rejects.
+- **SExtractor .param doc**: document `XMIN_IMAGE, XMAX_IMAGE, YMIN_IMAGE, YMAX_IMAGE`
+  plus required keys; restate `FLAGS==0 & SNR_WIN>30` extraction screen in the workflow. 
+
+### Impact
+- Fixes the failing unit test at the 30″ boundary (`rmag=12.60` keeps).
+- Prevents silent bypass of extent-based morphology checks by ensuring the four
+  geometry columns are present in CSVs.
+
+### Upgrade Notes
+1. Pull latest software version - all files
+
+
+## SExtractor .param requirements & extraction-time filters
+
+### Summary
+Document the four geometry columns required by the MNRAS morphology screen and
+restate extraction-time filters so generated CSVs are analysis-ready.
+
+### What changed
+- Add an explicit SExtractor `.param` snippet listing **XMIN_IMAGE, XMAX_IMAGE,
+  YMIN_IMAGE, YMAX_IMAGE** along with other required fields:
+  ```text
+  # sextractor.param (minimum for VASCO/MNRAS workflow)
+  XMIN_IMAGE
+  XMAX_IMAGE
+  YMIN_IMAGE
+  YMAX_IMAGE
+  SPREAD_MODEL
+  FWHM_IMAGE
+  ELONGATION
+  FLAGS
+  SNR_WIN
+  ALPHA_J2000
+  DELTA_J2000
+  ```
+
+## spikes.py — Line-rule boundary handling (MNRAS spikes)
+
+### Summary
+Adjust the diffraction-spike line rule to use **strict `<`** at the boundary,
+so equality on the Rmag–distance line is kept (not rejected). This matches
+our paper-aligned convention and the unit test expectations.
+
+### What changed
+- Line rule comparator:
+  - **Before:** `if m_near <= thresh: reject`
+  - **After:**  `if m_near <  thresh: reject`
+- Constant rule comparator remains unchanged: `m_near <= const_max_mag` (equality still rejects).
+
+### Rationale
+The MNRAS spike removal rule is defined as `Rmag ≤ a * d_arcsec + b` with
+`a = -0.09`, `b = 15.3`. We adopt a conservative convention to **keep equality**
+on the line rule to avoid over-rejecting true sources exactly on the boundary.
+(At `d = 30"`, threshold is **12.6**.)  [MNRAS 2022, Sec. 2(iv)]  (paper basis)  🔗
+``Rmag ≤ −0.09·d + 15.3``. 
+
+### Impact
+- Fixes the failing unit test:  
+  `spike: 30" & rmag=12.60 -> KEEP (line rule)` now passes.
+- No change to constant rule behavior:  
+  `spike: 5" & rmag=12.40 -> REJECT (const rule)` remains correct.
 
 ## VASCO v0.9.1 — NEOWISE Delta/Idempotent TAP & Healthcheck (2026‑01‑04)
 

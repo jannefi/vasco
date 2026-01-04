@@ -82,31 +82,28 @@ def _dbg_write(tile_dir: Path, text: str) -> None:
 def run_pass1(fits_path: str | Path, tile_dir: Path, *, config_root: str = 'configs') -> Tuple[Path, Path]:
     tile_dir = Path(tile_dir)
     fits_path = Path(fits_path)
-
     sex_bin = _find_binary(['sex', 'sextractor'])
     if sex_bin is None:
         _ensure_tool('sex')
 
-    # Stage configs into the run folder so bare names inside .sex resolve
-    try:
-        _stage_to_run_folder(tile_dir, Path(config_root), ['sex_pass1.sex', 'default.param', 'default.nnw', 'default.conv'])
-    except FileNotFoundError as e:
-        _dbg_write(tile_dir, f"[STAGE][ERROR] {e}")
-        raise
+    # Stage pass-1 config + NON-PSF parameters into the tile run folder
+    _stage_to_run_folder(
+        tile_dir, Path(config_root),
+        ['sex_pass1.sex', 'sex_default.param', 'default.nnw', 'default.conv']
+    )
 
-    # Use names relative to cwd=tile_dir
     conf = Path('sex_pass1.sex')
     img_rel = _make_img_rel_to_run(fits_path, tile_dir)
-
-    # Outputs & logs (catalogs relative to cwd; logs are opened by Python)
     pass1_ldac = Path('pass1.ldac')
     log = tile_dir / 'sex.out'
     err = tile_dir / 'sex.err'
 
+    # Explicitly disable PSF at CLI level (even if a config accidentally sets it)
     cmd = [sex_bin or 'sex', str(img_rel), '-c', str(conf),
-           '-CATALOG_NAME', str(pass1_ldac), '-CATALOG_TYPE', 'FITS_LDAC']
+           '-CATALOG_NAME', str(pass1_ldac), '-CATALOG_TYPE', 'FITS_LDAC',
+           '-PSF_NAME', '']
 
-    # Debug preflight
+    # (optional) debug preflight
     try:
         listing = ''.join(sorted(p.name for p in tile_dir.iterdir()))
         dbg = (
