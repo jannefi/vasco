@@ -26,6 +26,7 @@ VASCO enables reproducible research on astronomical objects that have vanished f
 - [Coverage Estimates](#coverage-estimates)
 - [Directory Layout and Sharded Tree](#directory-layout-and-sharded-tree)
 - [License & Contributions](#license--contributions)
+- [Readme Addendum](#readme-addendum)
 
 ---
 
@@ -407,6 +408,11 @@ TBD
 
 ## Recent Improvements
 
+### NEOWISE delta & healthcheck
+
+- For a faster, incremental NEOWISE run, see `docs/RUNBOOK_NEOWISE_DELTA.md`.
+- To verify TAP async job health, list stalled chunks, and recover lost jobs, see `docs/HEALTHCHECK_NEOWISE.md`
+
 ### Overlap aware download randomizer
 
 You can now make the random tile downloader avoid overlapping areas. See [release notes](RELEASE_NOTES.md)
@@ -520,3 +526,30 @@ Estimates with 30′×30′ tiles (POSS‑I ~ Dec ≥ −30°)
 ## License & contributions
 
 See `LICENSE` (if present). PRs/issues are welcome for reliability, data provenance, and reproducibility improvements.
+
+
+# README Addendum
+
+## NEOWISE delta & healthcheck (2026‑01‑04)
+
+This addendum introduces a fast, incremental NEOWISE workflow and a new health checker for async TAP jobs. It complements the main README and **WORKFLOW.md** without bloating core docs.
+
+---
+
+## Quick links
+- Delta [runbook](docs/RUNBOOK_NEOWISE_DELTA.md)
+- TAP [healthcheck](docs/HEALTHCHECK_NEOWISE.md)
+- Script: `scripts/healthcheck_tap_neowise.py`
+
+---
+
+## What changed (delta mode)
+- **Extractor** now writes **only new/changed** Parquet parts to `./data/local-cats/tmp/positions/new/` (manifest-gated; default chunk size **20k**).  
+  Command:
+  ```bash
+  python ./scripts/extract_positions_for_neowise_se.py \
+    --parquet-root ./data/local-cats/_master_optical_parquet \
+    --out-dir      ./data/local-cats/tmp/positions \
+    --chunk-size   20000 \
+    --manifest     ./data/local-cats/tmp/positions_manifest.json
+ 
