@@ -1,5 +1,22 @@
-# VASCO v0.9 — NEOWISE version
+# VASCO v0.9.1 — NEOWISE version
 
+
+## VASCO v0.9.1 — NEOWISE Delta/Idempotent TAP & Healthcheck (2026‑01‑04)
+
+**Summary.** This release introduces a faster, incremental NEOWISE step (1.5) with idempotent TAP async execution, partition‑aware sidecar upserts, and a health checker for async job monitoring & recovery. It reduces repeat work, speeds up large runs (>5k tiles), and adds guardrails to avoid lost or duplicated TAP jobs.
+
+### Highlights
+- **Delta mode (Step 1.5):** Only **new/changed** optical partitions are extracted and sent to TAP.
+- **Idempotent async TAP:** Batch skips chunks that already produced `*_closest.csv`. Per‑chunk runner resumes an existing async job via `*_tap.meta.json` instead of resubmitting.
+- **Sidecar upserts:** IR flags now upsert into partitioned Parquet (`ra_bin/dec_bin`), then rebuild a clean global flags Parquet view.
+- **Health checker:** Lists NEW,IN_FLIGHT,PARTIAL,NEED_RESUBMIT,COMPLETED chunks and prints safe remediation commands.
+
+### Makefile change (delta fast path)
+```make
+# Use new-only chunks written by incremental extractor
+CHUNK_GLOB := $(POSITIONS_DIR)/new/positions_chunk_*.csv
+PARALLEL   := 8
+```
 
 ## Post-2026-01-03 guidance for Step 4
 

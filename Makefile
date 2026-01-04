@@ -12,7 +12,7 @@ IRFLAGS_OUT_ROOT  := ./data/local-cats/_master_optical_parquet_irflags
 ADQL_SIMPLE := ./scripts/adql_neowise_se_SIMPLE.sql
 
 # Parallel & batch
-CHUNK_GLOB   := $(POSITIONS_DIR)/positions_chunk_*.csv
+CHUNK_GLOB   := $(POSITIONS_DIR)/new/positions_chunk_*.csv
 PARALLEL     := 8
 
 # Scripts
