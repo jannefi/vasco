@@ -17,7 +17,27 @@ the morphology filters.
   geometry columns are present in CSVs.
 
 ### Upgrade Notes
-1. Pull latest software version - all files
+1. Pull latest software version (all files from the repository) - rebuild your docker image if you use it
+2. To fully adopt the new early‑stage filters & morphology: remove various files from steps 2-6, and re-run all steps: `python run-random.py steps --steps 2,3,4,5,6 --layout auto --tiles-root ./data --xmatch-backend cds`. 
+I made a helper script that can be used to remove the existing step files: `refresh_configs_and_outputs.py`. It assumes new sharded folder structure.
+Dry-run: 
+    ```bash
+    python scripts/refresh_configs_and_outputs.py --tiles-root ./data \
+    --remove-pass1 --remove-pass2 --remove-xmatch --dry-run
+    ```
+    Execute:
+    ```bash
+    python scripts/refresh_configs_and_outputs.py --tiles-root ./data \
+    --remove-pass1 --remove-pass2 --remove-xmatch
+    ```
+    After that resume:
+    ```bash
+    python run-random.py steps --steps 2,3,4,5,6 --layout auto --tiles-root ./data --xmatch-backend cds
+    ```
+
+    ***Note*** This can take a long time depending on the size of your dataset.
+
+3. After steps 2-6 are done for all tiles, you should run all post-processing steps. See the workflow documentation
 
 
 ## SExtractor .param requirements & extraction-time filters
