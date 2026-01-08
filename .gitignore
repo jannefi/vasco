@@ -7,6 +7,7 @@ __pycache__/
 *.so
 
 # my stuff
+/logs
 /astrotests
 scripts/ensure_data_symlink.sh
 /data
