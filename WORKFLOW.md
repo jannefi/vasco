@@ -169,12 +169,75 @@ python ./scripts/qc_global_summary.py \
 
 ---
 
+### Post 1.6 — Final Candidates (Hybrid): IR annotation and MNRAS counts 
+
+**Inputs**
+- Optical master (partitioned Parquet): `./data/local-cats/_master_optical_parquet/`
+- NEOWISE flags (sidecar, compact Parquet):  
+  `./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet`
+
+**Outputs**
+- Counts-only report (always):  
+  `./data/vasco-candidates/post16/post16_match_summary.txt`
+- Optional strict view (export on demand):  
+  `./data/vasco-candidates/post16/candidates_final_core.parquet` (and/or CSV)
+- Optional annotated view (export on demand; usually not needed):  
+  `./data/vasco-candidates/post16_annotated/` (skip if disk constrained)
+
+#### 1) Ensure NEOWISE flags exist and QC is OK
+```bash
+# If not already done (see Post 1.5)
+python ./scripts/extract_positions_for_neowise_se.py \
+  --parquet-root ./data/local-cats/_master_optical_parquet \
+  --out-dir ./data/local-cats/tmp/positions --chunk-size 20000
+
+make post15_async_chunks
+make post15_sidecar
+
+python ./scripts/qc_global_summary.py \
+  ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
+  ./data/local-cats/_master_optical_parquet_irflags/neowise_se_global_summary.csv
+
+
 ### Step 2: Filter Unmatched Sources
 - **Script:** `./scripts/filter_unmatched_all.py --data-dir ./data --tol-cdss 0.05`
 - **Purpose:** For each tile, generates lists of unmatched sources for Gaia, PS1, and strict no-optical-counterpart lists.
 - **Outputs:** Per-tile CSVs in `xmatch/` (e.g., `sex_gaia_unmatched_cdss.csv`).
+```
 
+#### Optional: produce MNRAS style numbers
+```bash
+# Counts-only: annotates in-memory, applies the MNRAS gates, writes just a small summary
+python ./scripts/final_candidates_post16.py \
+  --optical-master-parquet ./data/local-cats/_master_optical_parquet \
+  --irflags-parquet ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
+  --annotate-ir \
+  --dedupe-tol-arcsec 0.5 \
+  --counts-only \
+  --out-dir ./data/vasco-candidates/post16
+```
 
+#### Optional: export a strict (IR-excluded) dataset for sharing
+```bash
+# Export IR-strict view (MNRAS-like), then optionally delete later to save disk
+python ./scripts/export_masked_view.py \
+  --input-parquet ./data/local-cats/_master_optical_parquet \
+  --irflags-parquet ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
+  --mask "exclude_ir_strict and exclude_hpm and exclude_skybot and exclude_supercosmos" \
+  --dedupe-tol-arcsec 0.5 \
+  --out ./data/vasco-candidates/post16/candidates_final_core.parquet
+```
+
+#### Optional: Export an annotated dataset
+```bash
+python ./scripts/final_candidates_post16.py \
+  --optical-master-parquet ./data/local-cats/_master_optical_parquet \
+  --irflags-parquet ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
+  --annotate-ir \
+  --dedupe-tol-arcsec 0.5 \
+  --out-dir ./data/vasco-candidates/post16_annotated \
+  --publish-annotated
+```
 ---
 
 ### Step 3: Summarise Runs

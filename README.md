@@ -20,6 +20,7 @@ VASCO enables reproducible research on astronomical objects that have vanished f
 - [Detailed Usage](#detailed-usage)
 - [Docker Usage](#docker-usage)
 - [Final Steps & Advanced Commands](#final-steps--advanced-commands)
+- [Hybrid IR-aware finalization (MNRAS counts immediately)](#hybrid-ir-aware-finalization-recommended)
 - [Recent Improvements](#recent-improvements)
 - [Troubleshooting](#troubleshooting)
 - [Audit Findings & Technical Notes](#audit-findings--technical-notes)
@@ -406,7 +407,52 @@ Update to the latest version, rebuild docker and keep running. More reading [in 
 TBD
 </details>
 
+## Hybrid IR-aware finalization (recommended)
+_Produce **MNRAS-style numbers immediately after IR annotation**, without permanently duplicating large datasets._
+
+**Why here?** In the MNRAS 2022 workflow, a large fraction of candidates are removed **after** checking other archives (dominantly IR) and **before** forming the final list. Our NEOWISE Single Exposure (L1b) flags stage (Post 1.5) is the right junction to apply IR awareness.  
+See: MNRAS 2022 §2–3; and this repo’s [WORKFLOW.md](WORKFLOW.md) → **Post 1.5** (NEOWISE TAP) and **Post 1.6** (Final Candidates, Hybrid).
+
+### What the hybrid model does
+1. **Annotate only** (no large permanent copies):  
+   - Keep `./data/local-cats/_master_optical_parquet/` as the single source of truth.  
+   - Keep the compact IR flags sidecar:  
+     `./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet`.  
+   - Join *at read time* when you need IR-aware operations.
+
+2. **Emit MNRAS-style counts immediately** after annotation (no big writes):  
+   - A small report with row counts after each gate (IR, morphology/spikes, HPM @ POSS-I epoch, SkyBoT, SuperCOSMOS, global dedupe) is written to  
+     `./data/vasco-candidates/post16/post16_match_summary.txt`.
+
+3. **Optional** export a strict (IR-excluded) view for exchange:  
+   - If needed, write `./data/vasco-candidates/post16/candidates_final_core.parquet` (and/or CSV), then delete later to conserve disk.
+
+### Quick commands
+```bash
+# 1) Ensure NEOWISE flags exist and QC is OK (Post 1.5)
+python ./scripts/extract_positions_for_neowise_se.py \
+  --parquet-root ./data/local-cats/_master_optical_parquet \
+  --out-dir ./data/local-cats/tmp/positions --chunk-size 20000
+make post15_async_chunks
+make post15_sidecar
+python ./scripts/qc_global_summary.py \
+  ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
+  ./data/local-cats/_master_optical_parquet_irflags/neowise_se_global_summary.csv
+
+# 2) MNRAS-style numbers immediately after IR annotation (counts-only)
+make post16_counts
+# -> writes ./data/vasco-candidates/post16/post16_match_summary.txt
+
+# 3) (Optional) export strict view (IR-excluded) for sharing
+make post16_strict
+# -> writes ./data/vasco-candidates/post16/candidates_final_core.parquet
+```
+
+
 ## Recent Improvements
+
+### New: Hybrid IR-aware finalization
+See [Hybrid IR-aware finalization (MNRAS counts immediately)](#hybrid-ir-aware-finalization-recommended).
 
 ### MNRAS spike boundary & morphology - 2026-01-04
 - See release notes for details
