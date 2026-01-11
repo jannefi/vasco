@@ -212,8 +212,7 @@ def main():
     print(f"[OK] Rebuilt global flags parquet: {all_parquet}")
 
     # SUCCESS marker
-    (out_root / '_SUCCESS').write_text('ok
-', encoding='utf-8')
+    (out_root / '_SUCCESS').write_text('ok', encoding='utf-8')
     print(f"[OK] Wrote marker: {out_root / '_SUCCESS'}")
 
     # Save manifest
