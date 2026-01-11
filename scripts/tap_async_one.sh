@@ -27,18 +27,19 @@ ADQL_ONE="$(tr '
 ' ' ' < "$ADQL" | tr -s ' ')"
 HDR="$(mktemp)"
 
+
 # Try resume: if META with joburl exists, reuse it
 JOBURL=""
 if [[ -s "$META" ]]; then
-  JOBURL="$(python - <<'PY'
-import json,sys
+  JOBURL="$(python - "$META" <<'PY'
+import json, sys
 try:
-  d=json.load(open(sys.argv[1],'r'))
-  print(d.get("job_url",""))
+    d = json.load(open(sys.argv[1], 'r'))
+    print(d.get('job_url', ''))
 except Exception:
-  pass
+    pass
 PY
-"$META")"
+)"
 fi
 
 if [[ -z "${JOBURL:-}" ]]; then
