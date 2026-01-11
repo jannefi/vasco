@@ -78,7 +78,10 @@ while true; do
   sleep 2
 done
 
-curl -s -o "$RAW" "$JOBURL/results/result"
+
+curl -s -L -f -o "$RAW" "$JOBURL/results/result" \
+  || { echo "[ERROR] Download failed (HTTP) for $CHUNK_BASE"; exit 1; }
+
 [[ -s "$RAW" ]] || { echo "[ERROR] Empty RAW for $CHUNK_BASE"; exit 1; }
 echo "[OK] RAW -> $RAW"
 
