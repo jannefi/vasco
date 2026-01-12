@@ -90,6 +90,11 @@ if [[ "$use_fifo" == "1" ]]; then
   # Seed tokens without seq (portable)
   for ((i=1; i<=PAR; i++)); do printf 'x' >&3; done
   for chunk in "${PENDING[@]}"; do
+    # STOP FLAG: halt further launches, let running jobs finish ---
+    if [ -f ./logs/post15/.STOP ]; then
+      echo "[STOP] Flag detected; halting new launches."
+      break
+    fi
     read -r -u 3 _tok
     { run_one "$chunk" "$ADQL" "$VERBOSE_CONSOLE"; printf 'x' >&3; } &
   done
@@ -99,6 +104,11 @@ else
   # Jobs-limited fallback: at most PAR concurrent background jobs
   active() { jobs -rp | wc -l | tr -d '[:space:]'; }
   for chunk in "${PENDING[@]}"; do
+    # STOP FLAG
+    if [ -f ./logs/post15/.STOP ]; then
+      echo "[STOP] Flag detected; halting new launches."
+      break 
+    fi
     while [[ "$(active)" -ge "$PAR" ]]; do sleep 1; done
     { run_one "$chunk" "$ADQL" "$VERBOSE_CONSOLE"; } &
   done
