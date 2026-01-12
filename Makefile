@@ -66,28 +66,6 @@ post15_qc:
 post15_all: post15_async_chunks post15_sidecar post15_qc
 	@echo "[DONE] Post 1.5 finished under $(IRFLAGS_OUT_ROOT)"
 
-# ---- Post 1.6
-post16_counts:
-	@$(PY) $(POST16) \
-		--optical-master-parquet $(PARQUET_ROOT) \
-		--irflags-parquet $(IRFLAGS_PARQUET) \
-		--annotate-ir \
-		--ra-col $(POST16_RA_COL) --dec-col $(POST16_DEC_COL) \
-		--join-key $(POST16_JOIN_KEY) \
-		--dedupe-tol-arcsec 0.5 \
-		--counts-only \
-		--out-dir ./data/vasco-candidates/post16
-
-post16_strict:
-	@$(PY) $(EXPORT_STRICT) \
-		--input-parquet $(PARQUET_ROOT) \
-		--irflags-parquet $(IRFLAGS_PARQUET) \
-		--join-key $(POST16_JOIN_KEY) \
-		--mask "exclude_ir_strict and exclude_hpm and exclude_skybot and exclude_supercosmos" \
-		--ra-col $(POST16_RA_COL) --dec-col $(POST16_DEC_COL) \
-		--dedupe-tol-arcsec 0.5 \
-		--out ./data/vasco-candidates/post16/candidates_final_core.parquet
-
 .PHONY: post16_counts
 post16_counts:
 	@python ./scripts/final_candidates_post16.py \
