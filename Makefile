@@ -87,3 +87,20 @@ post16_strict:
 		--ra-col $(POST16_RA_COL) --dec-col $(POST16_DEC_COL) \
 		--dedupe-tol-arcsec 0.5 \
 		--out ./data/vasco-candidates/post16/candidates_final_core.parquet
+
+.PHONY: post16_counts
+post16_counts:
+	@python ./scripts/final_candidates_post16.py \
+		--optical-master-parquet ./data/local-cats/_master_optical_parquet \
+		--irflags-parquet       ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
+		--annotate-ir \
+		--counts-only \
+		--out-dir ./data/vasco-candidates/post16
+
+.PHONY: post16_strict
+post16_strict:
+	@python ./scripts/export_masked_view.py \
+		--input-parquet  ./data/local-cats/_master_optical_parquet \
+		--irflags-parquet ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
+		--mask "exclude_ir_strict and exclude_hpm and exclude_skybot and exclude_supercosmos" \
+		--out  ./data/vasco-candidates/post16/candidates_final_core.parquet
