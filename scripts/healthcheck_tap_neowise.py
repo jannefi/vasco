@@ -3,30 +3,34 @@
 # -*- coding: utf-8 -*-
 """
 Health checker for NEOWISE-SE TAP async runs (delta workflow).
-
 Scans positions chunk files and classifies each chunk into states:
 - NEW: chunk exists, no meta, no closest
 - IN_FLIGHT: meta exists and TAP /phase != COMPLETED/ERROR; closest missing
 - COMPLETED: closest exists and is non-empty
 - NEED_RESUBMIT: meta exists but TAP /phase == ERROR or unreachable; closest missing
 - PARTIAL: RAW exists but closest missing (post-processing needed)
-
 Also outputs per-chunk CSV and a Markdown summary with remediation commands.
-
 Usage:
-  python scripts/healthcheck_tap_neowise.py     --positions-dir ./data/local-cats/tmp/positions     --glob 'new/positions_chunk_*.csv'     --out-md ./data/local-cats/tmp/healthcheck_neowise.md     --out-csv ./data/local-cats/tmp/healthcheck_neowise.csv
-
+  python scripts/healthcheck_tap_neowise.py --positions-dir ./data/local-cats/tmp/positions --glob 'new/positions_chunk_*.csv' --out-md ./data/local-cats/tmp/healthcheck_neowise.md --out-csv ./data/local-cats/tmp/healthcheck_neowise.csv
 Optional:
-  --curl-timeout 5   # seconds for phase checks
+  --curl-timeout 5  # seconds for phase checks
 """
-import argparse, csv, os, sys, subprocess, shlex
+
+import argparse
+import csv
+import sys
+import subprocess
+import shlex
 from pathlib import Path
+from textwrap import dedent
 
 PHASE_OK = {'COMPLETED'}
 PHASE_BAD = {'ERROR'}
 
+
 class Row:
-    __slots__ = ('chunk','closest','raw','meta','state','phase','job_url')
+    __slots__ = ('chunk', 'closest', 'raw', 'meta', 'state', 'phase', 'job_url')
+
     def __init__(self, chunk, closest, raw, meta):
         self.chunk = chunk
         self.closest = closest
@@ -35,6 +39,7 @@ class Row:
         self.state = ''
         self.phase = ''
         self.job_url = ''
+
 
 def check_phase(job_url: str, timeout: int) -> str:
     if not job_url:
@@ -52,25 +57,30 @@ def check_phase(job_url: str, timeout: int) -> str:
         except Exception:
             return ''
 
+
 def classify(row: Row, curl_timeout: int):
     # COMPLETED if closest present and non-empty
     if row.closest.exists() and row.closest.stat().st_size > 0:
         row.state = 'COMPLETED'
         return
+
     # If RAW present but no closest
     if row.raw.exists() and not row.closest.exists():
         row.state = 'PARTIAL'
         return
+
     # If meta exists, query phase
     if row.meta.exists():
         try:
             import json
             d = json.loads(row.meta.read_text())
-            row.job_url = d.get('job_url','')
+            row.job_url = d.get('job_url', '')
         except Exception:
             row.job_url = ''
+
         phase = check_phase(row.job_url, curl_timeout)
         row.phase = phase
+
         if phase in PHASE_OK:
             # completed but closest missing -> treat as PARTIAL (post-processing needed)
             row.state = 'PARTIAL'
@@ -79,6 +89,7 @@ def classify(row: Row, curl_timeout: int):
         else:
             row.state = 'IN_FLIGHT'
         return
+
     # else NEW
     row.state = 'NEW'
 
@@ -117,107 +128,73 @@ def main():
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open('w', newline='') as f:
         w = csv.writer(f)
-        w.writerow(['chunk_csv','state','phase','job_url','closest_csv','raw_csv','meta_json'])
+        w.writerow(['chunk_csv', 'state', 'phase', 'job_url', 'closest_csv', 'raw_csv', 'meta_json'])
         for r in rows:
             w.writerow([str(r.chunk), r.state, r.phase, r.job_url, str(r.closest), str(r.raw), str(r.meta)])
 
-    # Write Markdown (use % formatting to avoid brace escaping issues)
+    # Write Markdown
     out_md = Path(args.out_md)
     out_md.parent.mkdir(parents=True, exist_ok=True)
-    def list_items(state):
+
+    def list_items(state: str) -> str:
         items = [f"- `{r.chunk.name}`" for r in rows if r.state == state]
-        return '
-'.join(items) if items else '- (none)'
-    md = (
-        "# NEOWISE TAP healthcheck summary
+        return "\n".join(items) if items else "- (none)"
 
-"
-        "**Counts**
-"
-        "- NEW: %d
-"
-        "- IN_FLIGHT: %d
-"
-        "- PARTIAL: %d
-"
-        "- NEED_RESUBMIT: %d
-"
-        "- COMPLETED: %d
+    # Build markdown with a raw f-string; double braces for literal Bash ${...}
+    md = dedent(fr"""
+    # NEOWISE TAP healthcheck summary
 
-"
-        "## Details
-"
-        "### NEW (ready to submit)
-%s
+    **Counts**
+    - NEW: {counts.get('NEW', 0)}
+    - IN_FLIGHT: {counts.get('IN_FLIGHT', 0)}
+    - PARTIAL: {counts.get('PARTIAL', 0)}
+    - NEED_RESUBMIT: {counts.get('NEED_RESUBMIT', 0)}
+    - COMPLETED: {counts.get('COMPLETED', 0)}
 
-"
-        "### IN_FLIGHT (async job running)
-%s
+    ## Details
 
-"
-        "### PARTIAL (RAW present or phase=COMPLETED but closest missing)
-"
-        "Remediation:
-"
-        "```bash
-"
-        "# rebuild closest + QC for each listed chunk (idempotent)
-"
-        "for c in %s/%s; do
-"
-        "  base="${c%%.csv}"; raw="${base/_chunk_/}_raw.csv"; closest="${base/_chunk_/}_closest.csv";
-"
-        "  [[ -s "$raw" ]] && python ./scripts/closest_per_row_id.py "$raw" "$closest" && \
-  python ./scripts/qc_chunk_summary.py "$closest" > "${closest%%.csv}.qc.txt" 2>&1 || true
-"
-        "done
-"
-        "```
+    ### NEW (ready to submit)
+    {list_items('NEW')}
 
-"
-        "### NEED_RESUBMIT (error or unreachable phase, no closest)
-"
-        "Remediation:
-"
-        "```bash
-"
-        "# delete meta to force re-submit, then run single-chunk async
-"
-        "for c in %s/%s; do
-"
-        "  base="${c%%.csv}"; meta="${base/_chunk_/}_tap.meta.json"; closest="${base/_chunk_/}_closest.csv";
-"
-        "  [[ ! -s "$closest" ]] && rm -f "$meta"; done
-"
-        "# Re-run (example for one chunk):
-"
-        "bash ./scripts/tap_async_one.sh %s/new/positions_chunk_00001.csv ./scripts/adql_neowise_se_SIMPLE.sql
-"
-        "```
+    ### IN_FLIGHT (async job running)
+    {list_items('IN_FLIGHT')}
 
-"
-        "### COMPLETED (closest present)
-%s
+    ### PARTIAL (RAW present or phase=COMPLETED but closest missing)
+    Remediation:
+    ```bash
+    # rebuild closest + QC for each listed chunk (idempotent)
+    for c in {args.positions_dir}/{args.glob}; do
+      base="${{c%%.csv}}"; raw="${{base/_chunk_/}}_raw.csv"; closest="${{base/_chunk_/}}_closest.csv";
+      [[ -s "$raw" ]] && python ./scripts/closest_per_row_id.py "$raw" "$closest" && \
+      python ./scripts/qc_chunk_summary.py "$closest" > "${{closest%%.csv}}.qc.txt" 2>&1 || true
+    done
+    ```
 
-"
-        "---
-"
-        "CSV: `%s`  |  Markdown: `%s`
-"
-    ) % (
-        counts.get('NEW',0), counts.get('IN_FLIGHT',0), counts.get('PARTIAL',0), counts.get('NEED_RESUBMIT',0), counts.get('COMPLETED',0),
-        list_items('NEW'),
-        list_items('IN_FLIGHT'),
-        args.positions_dir, args.glob,
-        args.positions_dir, args.glob,
-        args.positions_dir,
-        list_items('COMPLETED'),
-        str(out_csv), str(out_md)
-    )
+    ### NEED_RESUBMIT (error or unreachable phase, no closest)
+    Remediation:
+    ```bash
+    # delete meta to force re-submit, then run single-chunk async
+    for c in {args.positions_dir}/{args.glob}; do
+      base="${{c%%.csv}}"; meta="${{base/_chunk_/}}_tap.meta.json"; closest="${{base/_chunk_/}}_closest.csv";
+      [[ ! -s "$closest" ]] && rm -f "$meta"
+    done
+
+    # Re-run (example for one chunk):
+    bash ./scripts/tap_async_one.sh {args.positions_dir}/new/positions_chunk_00001.csv ./scripts/adql_neowise_se_SIMPLE.sql
+    ```
+
+    ### COMPLETED (closest present)
+    {list_items('COMPLETED')}
+
+    ---
+    CSV: `{out_csv}`  |  Markdown: `{out_md}`
+    """).lstrip()
+
     out_md.write_text(md)
 
     print(f"[OK] Wrote CSV -> {out_csv}")
     print(f"[OK] Wrote MD  -> {out_md}")
+
 
 if __name__ == '__main__':
     main()
