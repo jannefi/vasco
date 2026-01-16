@@ -82,3 +82,13 @@ post16_strict:
 		--irflags-parquet ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
 		--mask "exclude_ir_strict and exclude_hpm and exclude_skybot and exclude_supercosmos" \
 		--out  ./data/vasco-candidates/post16/candidates_final_core.parquet
+# === Post 1.6 (Provenance & Epoch sidecars) ===
+PROV_SIDECAR := ./data/metadata/tile_provenance.parquet
+EPOCH_SIDECAR := ./data/metadata/epoch_by_source.parquet
+
+.PHONY: post16_provenance post16_epoch
+post16_provenance:
+	@python ./scripts/build_tile_provenance.py
+
+post16_epoch: post16_provenance
+	@python ./scripts/build_epoch_sidecar_from_tiles.py
