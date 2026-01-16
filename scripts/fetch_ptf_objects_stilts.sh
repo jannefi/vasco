@@ -1,46 +1,97 @@
 
 #!/usr/bin/env bash
-# ./scripts/fetch_ptf_objects_stilts.sh <positions.vot> <flags_out_root>
+# PTF flags via IRSA TAP (/sync) using STILTS only for CSV->VOTable.
+# - Renames reserved NUMBER -> objectnumber in the upload
+# - Single-line ADQL with 5" circle by default (no aggregates)
+# - Writes CSV + Parquet flags, with a small run log
+#
+# Usage:
+#   ./scripts/fetch_ptf_objects_stilts.sh <positions.(csv|vot|xml)> <out_dir> [radius_arcsec] [ptf_table]
+# Example:
+#   ./scripts/fetch_ptf_objects_stilts.sh ./work/positions_upload.csv \
+#       ./data/local-cats/_master_optical_parquet_flags 5 ptf_objects
 set -euo pipefail
-POS=${1:?positions.vot required}
-OUTROOT=${2:?flags out root required}
-mkdir -p "$OUTROOT"
 
-TMPDIR="$(mktemp -d -t ptf_XXXX)"
-trap 'rm -rf "$TMPDIR"' EXIT
-CSV="$TMPDIR/upload.csv"
-VOT="$TMPDIR/upload.vot"
-OUTCSV="$OUTROOT/flags_ptf_objects.csv"
-OUTPARQ="$OUTROOT/flags_ptf_objects.parquet"
+POS="${1:?positions file required (csv/vot/xml)}"
+OUTDIR="${2:?output directory required}"
+R_AS="${3:-5}"
+PTF_TABLE="${4:-ptf_objects}"
 
-stilts tcopy in="$POS" ifmt=votable out="$CSV" ofmt=csv
-stilts tcopy in="$CSV" ifmt=csv     out="$VOT" ofmt=votable
+mkdir -p "$OUTDIR"
 
-ADQL="SELECT u.NUMBER, COUNT(*) AS nmatch
-FROM TAP_UPLOAD.t1 AS u
-JOIN ptf_objects AS p
-  ON 1 = CONTAINS(
-       POINT('ICRS', p.ra, p.dec),
-       CIRCLE('ICRS', u.ra, u.dec, 5.0/3600.0)
-     )
-GROUP BY u.NUMBER"
+BASENAME="$(basename "$PTF_TABLE")"
+VOT="/tmp/ptf_upload.$$.$BASENAME.vot"
+CSV="$OUTDIR/flags_${BASENAME}.csv"
+PARQ="$OUTDIR/flags_${BASENAME}.parquet"
+HDR="$OUTDIR/flags_${BASENAME}.headers.txt"
+LOG="$OUTDIR/flags_${BASENAME}.stilts.log"
 
-stilts tapquery \
-  tapurl=https://irsa.ipac.caltech.edu/TAP \
-  nupload=1 upload1="$VOT" upname1=t1 ufmt1=votable \
-  adql="$ADQL" \
-  out="$OUTCSV" ofmt=csv
+# 0) Input stats
+IN_TOTAL=$(wc -l < "$POS" 2>/dev/null || echo 0)
+echo "[info] input: $POS  rows(with header?)=$IN_TOTAL" | tee "$LOG"
 
-python - <<'PY' "$OUTCSV" "$OUTPARQ"
-import sys, pandas as pd, pyarrow as pa, pyarrow.parquet as pq
-csv, outp = sys.argv[1], sys.argv[2]
+# 1) Normalize to VOTable & rename reserved NUMBER->objectnumber
+case "${POS##*.}" in
+  csv|CSV)
+    stilts tpipe in="$POS" ifmt=csv \
+      cmd='colmeta -name objectnumber NUMBER' \
+      out="$VOT" ofmt=votable
+    ;;
+  vot|xml|VOT|XML)
+    # If already VOTable, still ensure objectnumber exists; if not, try to rename NUMBER
+    stilts tpipe in="$POS" ifmt=votable \
+      cmd='colmeta -name objectnumber NUMBER' \
+      out="$VOT" ofmt=votable
+    ;;
+  *)
+    echo "[error] Unsupported positions format: $POS" | tee -a "$LOG"
+    exit 2
+    ;;
+esac
+echo "[info] upload VOTable: $VOT" | tee -a "$LOG"
+
+# 2) IRSA-friendly ADQL (single-line, no aggregates)
+ADQL="SELECT DISTINCT u.objectnumber FROM TAP_UPLOAD.my_table AS u, ${PTF_TABLE} AS p WHERE CONTAINS(POINT(p.ra,p.dec),CIRCLE(u.ra,u.dec, ${R_AS}/3600.0))=1"
+echo "[adql] ${ADQL}" | tee -a "$LOG"
+
+# 3) IRSA TAP /sync with multipart upload
+HTTP_CODE=$(curl -sS -X POST 'https://irsa.ipac.caltech.edu/TAP/sync' \
+  -F 'REQUEST=doQuery' \
+  -F 'LANG=ADQL' \
+  -F 'FORMAT=csv' \
+  -F 'UPLOAD=my_table,param:table' \
+  -F "table=@${VOT};type=application/x-votable+xml" \
+  -F "QUERY=${ADQL}" \
+  -D "$HDR" \
+  -w '%{http_code}' \
+  -o "$CSV")
+
+echo "[http] status=$HTTP_CODE  headers=$HDR  body=$CSV" | tee -a "$LOG"
+
+# 3b) Fail fast if IRSA returned a VOTable ERROR payload
+if grep -q 'QUERY_STATUS" value="ERROR"' "$CSV" 2>/dev/null; then
+  echo "[error] IRSA returned VOTable ERROR. First lines:" | tee -a "$LOG"
+  head -n 40 "$CSV" | tee -a "$LOG"
+  exit 2
+fi
+
+# 4) Output stats
+OUT_TOTAL=$(wc -l < "$CSV" | awk '{print $1}')
+OUT_DATA=$(( OUT_TOTAL > 0 ? OUT_TOTAL - 1 : 0 ))
+echo "[info] output CSV rows: total=$OUT_TOTAL data_rows=$OUT_DATA" | tee -a "$LOG"
+
+# 5) CSV -> Parquet flags (map objectnumber -> NUMBER)
+python - <<'PY' "$CSV" "$PARQ"
+import sys, pandas as pd, pyarrow.parquet as pq, pyarrow as pa
+csv, parq = sys.argv[1], sys.argv[2]
 df = pd.read_csv(csv)
-if not df.empty and 'NUMBER' in df.columns:
-    df['NUMBER'] = df['NUMBER'].astype(str)
-    flag = df[['NUMBER']].drop_duplicates().assign(has_other_archive_match=True)
+if not df.empty and 'objectnumber' in df.columns:
+    flags = df[['objectnumber']].drop_duplicates().rename(columns={'objectnumber':'NUMBER'})
+    flags['has_other_archive_match'] = True
 else:
-    flag = pd.DataFrame(columns=['NUMBER','has_other_archive_match'])
-pq.write_table(pa.Table.from_pandas(flag, preserve_index=False), outp)
-print('[OK] PTF flags ->', outp, 'rows=', len(flag))
+    flags = pd.DataFrame(columns=['NUMBER','has_other_archive_match'])
+pq.write_table(pa.Table.from_pandas(flags, preserve_index=False), parq)
+print("[OK] Wrote", parq, "rows=", len(flags))
 PY
 
+echo "[DONE] CSV=$CSV  PARQUET=$PARQ" | tee -a "$LOG"
