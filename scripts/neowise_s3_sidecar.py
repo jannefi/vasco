@@ -129,14 +129,24 @@ def haversine_sep_arcsec(ra0_deg: float, dec0_deg: float,
 # -------------------------------
 # NEOWISE dataset (S3, anonymous)
 # -------------------------------
+
 def build_neowise_dataset(years: List[str]) -> pds.Dataset:
-    # URI form; Arrow infers S3 FS and treats the path as a dataset directory
+    """
+    Build a multi-year NEOWISE Dataset from IRSA's public S3.
+    PyArrow 21 requires that when an S3FileSystem is passed, the path
+    must be 'bucket/key...' (no 's3://').
+    """
+    fs = pa.fs.S3FileSystem(anonymous=True)
+
     per_year = []
     for yr in years:
-        uri = f"s3://{S3_BUCKET}/{S3_PREFIX}/{yr}/neowiser-healpix_k5-{yr}.parquet"
-        fs = pa.fs.S3FileSystem(anonymous=True)
-        ds = pds.dataset(uri, format="parquet", partitioning="hive",filesystem=fs)
+        # was: uri = f"s3://{S3_BUCKET}/{S3_PREFIX}/{yr}/neowiser-healpix_k5-{yr}.parquet"
+        path = f"{S3_BUCKET}/{S3_PREFIX}/{yr}/neowiser-healpix_k5-{yr}.parquet"  # <-- no scheme
+        # NOTE: no need for partitioning="hive" here; each year is a file path.
+        ds = pds.dataset(path, format="parquet", filesystem=fs)
         per_year.append(ds)
+
+    # Combine all years into a single dataset
     return pds.dataset(per_year)
 
 
