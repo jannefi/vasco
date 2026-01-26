@@ -130,24 +130,32 @@ def haversine_sep_arcsec(ra0_deg: float, dec0_deg: float,
 # NEOWISE dataset (S3, anonymous)
 # -------------------------------
 
+
+# helper at top (keep if you already added it)
+def _mk_s3fs(anon=False):
+    # Pin region for Arrow v21 with/without anonymous access
+    import pyarrow as pa
+    return pa.fs.S3FileSystem(anonymous=anon, region="us-west-2")
+
 def build_neowise_dataset(years: List[str]) -> pds.Dataset:
     """
     Build a multi-year NEOWISE Dataset from IRSA's public S3.
-    PyArrow 21 requires that when an S3FileSystem is passed, the path
-    must be 'bucket/key...' (no 's3://').
+    IMPORTANT: point to the *directory* root and use partitioning="hive"
+               so that the partition column 'healpix_k5' is visible.
     """
-    fs = pa.fs.S3FileSystem(anonymous=True)
+    fs = _mk_s3fs(anon=True)
 
     per_year = []
     for yr in years:
-        # was: uri = f"s3://{S3_BUCKET}/{S3_PREFIX}/{yr}/neowiser-healpix_k5-{yr}.parquet"
-        path = f"{S3_BUCKET}/{S3_PREFIX}/{yr}/neowiser-healpix_k5-{yr}.parquet"  # <-- no scheme
-        # NOTE: no need for partitioning="hive" here; each year is a file path.
-        ds = pds.dataset(path, format="parquet", filesystem=fs)
+        # Directory root, no "s3://" scheme because we pass filesystem=fs
+        # e.g. nasa-irsa-wise/wise/neowiser/catalogs/p1bs_psd/healpix_k5/year9
+        root = f"{S3_BUCKET}/{S3_PREFIX}/{yr}"
+        ds = pds.dataset(root, format="parquet", partitioning="hive", filesystem=fs)
         per_year.append(ds)
 
-    # Combine all years into a single dataset
+    # Combine all years into one logical dataset
     return pds.dataset(per_year)
+
 
 
 # -------------------------------
@@ -267,8 +275,11 @@ def match_partition_to_table(opt_part_df: pd.DataFrame,
     if opt_part_df.empty:
         return pa.Table.from_arrays([pa.array([], type=pa.string())], names=["__empty__"]).drop_columns(["__empty__"])
 
+    
     kfield = pc.field("healpix_k5")
-    neo_tbl = neowise_ds.to_table(filter=(kfield == pa.scalar(k5_pixel)), columns=neo_cols)
+    cols = list(dict.fromkeys(list(neo_cols) + ["healpix_k5"]))  # include partition column once
+    neo_tbl = neowise_ds.to_table(filter=(kfield == pa.scalar(k5_pixel)), columns=cols)
+
     neo_df = neo_tbl.to_pandas()
     if neo_df.empty:
         return pa.Table.from_arrays([pa.array([], type=pa.string())], names=["__empty__"]).drop_columns(["__empty__"])
