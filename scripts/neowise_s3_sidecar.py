@@ -137,24 +137,31 @@ def _mk_s3fs(anon=False):
     import pyarrow as pa
     return pa.fs.S3FileSystem(anonymous=anon, region="us-west-2")
 
+
 def build_neowise_dataset(years: List[str]) -> pds.Dataset:
-    """
-    Build a multi-year NEOWISE Dataset from IRSA's public S3.
-    IMPORTANT: point to the *directory* root and use partitioning="hive"
-               so that the partition column 'healpix_k5' is visible.
-    """
     fs = _mk_s3fs(anon=True)
+    datasets = []
 
-    per_year = []
     for yr in years:
-        # Directory root, no "s3://" scheme because we pass filesystem=fs
-        # e.g. nasa-irsa-wise/wise/neowiser/catalogs/p1bs_psd/healpix_k5/year9
-        root = f"{S3_BUCKET}/{S3_PREFIX}/{yr}"
-        ds = pds.dataset(root, format="parquet", partitioning="hive", filesystem=fs)
-        per_year.append(ds)
+        root = f"{S3_BUCKET}/{S3_PREFIX}/{yr}"  # e.g. nasa-irsa-wise/wise/neowiser/.../year9
+        # Recursively list year root and pick only parquet files
+        selector = pa.fs.FileSelector(root, recursive=True)
+        infos = fs.get_file_info(selector)
+        parquet_paths = [fi.path for fi in infos if fi.is_file and fi.path.endswith(".parquet")]
+        if not parquet_paths:
+            raise RuntimeError(f"No Parquet files found under {root}")
 
-    # Combine all years into one logical dataset
-    return pds.dataset(per_year)
+        ds = pds.dataset(
+            parquet_paths,
+            format="parquet",
+            filesystem=fs,
+            partitioning="hive",
+            partition_base_dir=root,   # so healpix_k5 is parsed from the relative path
+        )
+        datasets.append(ds)
+
+    return pds.dataset(datasets)
+
 
 
 
