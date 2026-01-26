@@ -134,7 +134,8 @@ def build_neowise_dataset(years: List[str]) -> pds.Dataset:
     per_year = []
     for yr in years:
         uri = f"s3://{S3_BUCKET}/{S3_PREFIX}/{yr}/neowiser-healpix_k5-{yr}.parquet"
-        ds = pds.dataset(uri, format="parquet", partitioning="hive")
+        fs = pa.fs.S3FileSystem(anonymous=True)
+        ds = pds.dataset(uri, format="parquet", partitioning="hive",filesystem=fs)
         per_year.append(ds)
     return pds.dataset(per_year)
 
