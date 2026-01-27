@@ -194,7 +194,6 @@ def _tap_pushdown_filter():
     f = (pc.field("qual_frame") > pc.scalar(0)) & \
         (pc.field("qi_fact")    > pc.scalar(0.0)) & \
         (pc.field("saa_sep")    > pc.scalar(0.0)) & \
-        (pc.field("moon_masked") == pc.scalar("00")) & \
         (pc.field("w1snr")      >= pc.scalar(5.0)) & \
         (pc.field("mjd")        <= pc.scalar(59198.0))
     return f
@@ -216,7 +215,7 @@ def match_k5(opt_part_df: pd.DataFrame,
         leaf = _irsa_year_leaf_path(yr, int(opt_part_df["healpix_k5"].iloc[0]))
         if not _leaf_exists(fs, leaf):
             print(f"[WARN] Missing leaf for {yr}: {leaf}"); continue
-        ds_leaf = pds.dataset(leaf, format="parquet", filesystem=fs, partitioning="hive")
+        ds_leaf = pds.dataset(leaf, format="parquet", filesystem=fs, partitioning="hive", exclude_invalid_files=True)
         fields  = set(ds_leaf.schema.names)
 
         required = ["ra","dec","mjd","source_id","cntr"]
@@ -228,6 +227,15 @@ def match_k5(opt_part_df: pd.DataFrame,
         # pushdown: RA/Dec bbox AND TAP gates
         filt = bbox_f & tap_f
         tbl  = ds_leaf.to_table(filter=filt, columns=have)
+
+        if "moon_masked" in tbl.column_names and tbl.num_rows > 0:
+            mm_utf8 = pc.cast(tbl["moon_masked"], pa.utf8())
+            mm_str = pc.utf8_lpad(
+                    pc.replace_substring_regex(mm_utf8, pattern="[^0-9]", replacement=""),
+                    2, "0"
+            )
+            tbl = tbl.filter(pc.equal(mm_str, pc.scalar("00")))
+
         if tbl.num_rows == 0: continue
         neo_frames.append(tbl.to_pandas())
 
@@ -273,7 +281,7 @@ def parse_years_arg(years_arg: str) -> List[str]:
     if not years_arg and env:
         years_arg = env
     if not years_arg:
-        return [f"year{y}" for y in range(1, 12)]  # default: all years
+        return [f"year{y}" for y in range(1, 12)] + ["addendum"] # default: all years
     return [p.strip() for p in years_arg.replace(",", " ").split() if p.strip()]
 
 def existing_k5_in_tmp(tmp_dir: str) -> set:
