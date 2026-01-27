@@ -129,18 +129,55 @@ def _irsa_year_roots(years: List[str]) -> List[str]:
     # Filesystem paths WITHOUT "s3://" because we pass filesystem=fs
     return [f"{S3_BUCKET}/{S3_PREFIX}/{yr}" for yr in years]
 
-def _build_irsa_years_dataset(years: List[str]) -> pds.Dataset:
-    fs  = _mk_s3fs(anon=True)
-    roots = _irsa_year_roots(years)
-    # Directory dataset over the year roots; ignore README.txt et al.
+
+IRSA_YEAR_DIR_FMT = "neowiser-healpix_k5-{year}.parquet"  # directory name under each year
+
+def _build_irsa_years_dataset(years: list[str]) -> pds.Dataset:
+    """
+    Build a multi-year dataset for IRSA NEOWISER. For each year, prefer the
+    directory '.../yearX/neowiser-healpix_k5-yearX.parquet/' if it exists.
+    Fall back to a single parquet file if IRSA ever ships that way.
+    """
+    fs = _mk_s3fs(anon=True)  # your existing region-pinned helper
+
+    roots: list[str] = []
+    for yr in years:
+        # 1) Prefer directory dataset:
+        dir_path = f"{S3_BUCKET}/{S3_PREFIX}/{yr}/{IRSA_YEAR_DIR_FMT.format(year=yr)}"
+        try:
+            info = fs.get_file_info([dir_path])[0]
+        except Exception:
+            info = None
+
+        if info and info.type == pafs.FileType.Directory:
+            roots.append(dir_path)
+            continue
+
+        # 2) Fallback: a single file (rare, but keep it robust)
+        file_path = f"{S3_BUCKET}/{S3_PREFIX}/{yr}/neowiser-healpix_k5-{yr}.parquet"
+        try:
+            info2 = fs.get_file_info([file_path])[0]
+            if info2.type == pafs.FileType.File:
+                roots.append(file_path)
+                continue
+        except Exception:
+            pass
+
+        # 3) If neither path exists, log a note and keep going
+        print(f"[WARN] IRSA year root not found for {yr}: "
+              f"tried '{dir_path}' and '{file_path}'")
+
+    if not roots:
+        raise RuntimeError("No IRSA NEOWISER roots found for the requested years.")
+
+    # Build a dataset across all roots (directory or file); skip non-parquet artifacts
     return pds.dataset(
         roots,
         format="parquet",
         filesystem=fs,
-        partitioning="hive",          # harmless if not actually partitioned; enables dir-derived cols if present
-        exclude_invalid_files=True    # skip README.txt etc.
+        partitioning="hive",
+        exclude_invalid_files=True,
     )
-
 
 # ---------------------------
 # Optical parquet (VASCO) I/O
