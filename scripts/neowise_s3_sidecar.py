@@ -130,7 +130,7 @@ def _irsa_year_roots(years: List[str]) -> List[str]:
     return [f"{S3_BUCKET}/{S3_PREFIX}/{yr}" for yr in years]
 
 
-IRSA_YEAR_DIR_FMT = "neowiser-healpix_k5-{year}.parquet"  # directory name under each year
+IRSA_YEAR_DIR_FMT = "neowiser-healpix_k5-{year}.parquet/_metadata"  # directory name under each year
 
 def _build_irsa_years_dataset(years: list[str]) -> pds.Dataset:
     """
