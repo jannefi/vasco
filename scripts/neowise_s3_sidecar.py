@@ -190,13 +190,14 @@ def _bbox_filter_for_ra_dec(opt_part_df: pd.DataFrame, arcsec_radius: float):
     return f_ra & f_dec
 
 def _tap_pushdown_filter():
-    # qual_frame>0 AND qi_fact>0 AND saa_sep>0 AND moon_masked='00' AND w1snr>=5 AND mjd<=59198
-    f = (pc.field("qual_frame") > pc.scalar(0)) & \
-        (pc.field("qi_fact")    > pc.scalar(0.0)) & \
-        (pc.field("saa_sep")    > pc.scalar(0.0)) & \
-        (pc.field("w1snr")      >= pc.scalar(5.0)) & \
+    # Only schema-stable numeric gates pushed down; moon_masked handled post-read.
+    return (
+        (pc.field("qual_frame") > pc.scalar(0)) &
+        (pc.field("qi_fact")    > pc.scalar(0.0)) &
+        (pc.field("saa_sep")    > pc.scalar(0.0)) &
+        (pc.field("w1snr")      >= pc.scalar(5.0)) &
         (pc.field("mjd")        <= pc.scalar(59198.0))
-    return f
+    )
 
 def match_k5(opt_part_df: pd.DataFrame,
              years: Iterable[str],
@@ -215,7 +216,8 @@ def match_k5(opt_part_df: pd.DataFrame,
         leaf = _irsa_year_leaf_path(yr, int(opt_part_df["healpix_k5"].iloc[0]))
         if not _leaf_exists(fs, leaf):
             print(f"[WARN] Missing leaf for {yr}: {leaf}"); continue
-        ds_leaf = pds.dataset(leaf, format="parquet", filesystem=fs, partitioning="hive", exclude_invalid_files=True)
+        ds_leaf = pds.dataset(leaf, format="parquet", filesystem=fs, partitioning="hive", 
+                              exclude_invalid_files=True)
         fields  = set(ds_leaf.schema.names)
 
         required = ["ra","dec","mjd","source_id","cntr"]
@@ -228,13 +230,16 @@ def match_k5(opt_part_df: pd.DataFrame,
         filt = bbox_f & tap_f
         tbl  = ds_leaf.to_table(filter=filt, columns=have)
 
+        # Normalize moon_masked AFTER read: keep rows that are logically '00'
+        # Accept either numeric 0 or string "00"
         if "moon_masked" in tbl.column_names and tbl.num_rows > 0:
-            mm_utf8 = pc.cast(tbl["moon_masked"], pa.utf8())
-            mm_str = pc.utf8_lpad(
-                    pc.replace_substring_regex(mm_utf8, pattern="[^0-9]", replacement=""),
-                    2, "0"
-            )
-            tbl = tbl.filter(pc.equal(mm_str, pc.scalar("00")))
+            mm_col = tbl["moon_masked"]  # Array, not Expression
+            # Keep if numeric 0
+            keep_num0 = pc.equal(pc.cast(mm_col, pa.int64()), pc.scalar(0))
+            # Or exactly the string "00"
+            keep_str00 = pc.equal(pc.cast(mm_col, pa.utf8()), pc.scalar("00"))
+            keep = pc.or_(keep_num0, keep_str00)
+            tbl = tbl.filter(keep)
 
         if tbl.num_rows == 0: continue
         neo_frames.append(tbl.to_pandas())
@@ -281,7 +286,8 @@ def parse_years_arg(years_arg: str) -> List[str]:
     if not years_arg and env:
         years_arg = env
     if not years_arg:
-        return [f"year{y}" for y in range(1, 12)] + ["addendum"] # default: all years
+        # Default: all years + addendum
+        return [f"year{y}" for y in range(1, 12)] + ["addendum"]
     return [p.strip() for p in years_arg.replace(",", " ").split() if p.strip()]
 
 def existing_k5_in_tmp(tmp_dir: str) -> set:
