@@ -1,44 +1,62 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NEOWISE sidecar via AWS S3 Parquet (anonymous) — leaf-targeted by k5
-Version: 2026-01-27c (TAP-equivalent defaults)
+NEOWISER sidecar via AWS S3 Parquet (anonymous) — leaf-targeted by k5
+Version: 2026-01-27d (TAP-equivalent defaults, addendum included)
 
-Defaults now mirror your TAP ADQL:
-- all years
-- raw ra/dec (no ra_corr/dec_corr)
-- radius = 5.0 arcsec
-- qual_frame > 0
-- qi_fact > 0
-- saa_sep > 0
-- moon_masked == '00'
-- w1snr >= 5
-- mjd <= 59198
+This sidecar matches optical positions to NEOWISER single-exposure detections
+by reading IRSA’s public S3 Parquet leaves (anonymous). It plans *only* the
+HEALPix k5 bins present in your optical input (no whole-sky scans).
+
+TAP-equivalent defaults (same as your ADQL):
+ - all years (year1..year11) **plus addendum**
+ - raw ra/dec (no ra_corr/dec_corr)
+ - radius = 5.0 arcsec
+ - qual_frame > 0
+ - qi_fact > 0
+ - saa_sep > 0
+ - moon_masked == '00'   (enforced AFTER read; push-down uses only numeric gates)
+ - w1snr >= 5
+ - mjd <= 59198
 
 Outputs:
-- tmp/k5=<id>.parquet shards (resume)
-- neowise_se_flags_ALL.parquet (unless --no-finalize)
+ - tmp/k5=<id>.parquet shards (resume-friendly)
+ - neowise_se_flags_ALL.parquet (unless --no-finalize)
+
+Notes:
+ - Anonymous reads from IRSA S3 (nasa-irsa-wise) for NEOWISER; IAM-backed reads
+   for your S3 buckets if optical_root is s3://...
+ - PyArrow 21-friendly: all post-read filtering uses array-based compute.
 """
 
 import os, sys, math, glob, argparse
 from typing import List, Optional, Tuple, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
-import numpy as np, pandas as pd
-import pyarrow as pa, pyarrow.compute as pc, pyarrow.dataset as pds, pyarrow.parquet as pq
+
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.dataset as pds
+import pyarrow.parquet as pq
 from pyarrow import fs as pafs
 
-S3_BUCKET = "nasa-irsa-wise"
-S3_PREFIX = "wise/neowiser/catalogs/p1bs_psd/healpix_k5"
-DEFAULT_OPTICAL_PARQUET_ROOT = "./data/local-cats/_master_optical_parquet"
-DEFAULT_OUT_FLAGS_ROOT      = "./data/local-cats/_master_optical_parquet_irflags"
-DEFAULT_OUT_FILE            = "neowise_se_flags_ALL.parquet"
+# ---- IRSA S3 layout ----
+S3_BUCKET  = "nasa-irsa-wise"
+S3_PREFIX  = "wise/neowiser/catalogs/p1bs_psd/healpix_k5"
 
-# columns we may project from NEOWISE
+# ---- Local/S3 optical roots & outputs ----
+DEFAULT_OPTICAL_PARQUET_ROOT = "./data/local-cats/_master_optical_parquet"
+DEFAULT_OUT_FLAGS_ROOT       = "./data/local-cats/_master_optical_parquet_irflags"
+DEFAULT_OUT_FILE             = "neowise_se_flags_ALL.parquet"
+
+# Columns we may project from NEOWISER
 DEFAULT_NEO_COLS = [
-    "cntr", "source_id", "ra", "dec", "mjd",
-    "w1snr", "w2snr", "qual_frame", "qi_fact", "saa_sep", "moon_masked"
+    "cntr","source_id","ra","dec","mjd",
+    "w1snr","w2snr","qual_frame","qi_fact","saa_sep","moon_masked"
 ]
 
+# Optical RA/Dec name candidates (auto-detect)
 _RADEC_PAIRS_OPT = [
     ("opt_ra_deg", "opt_dec_deg"),
     ("ra_deg", "dec_deg"),
@@ -47,12 +65,15 @@ _RADEC_PAIRS_OPT = [
     ("X_WORLD", "Y_WORLD"),
 ]
 
+# ----------------- helpers -----------------
+
 def k5_index_ra_dec(ra_deg_array: np.ndarray, dec_deg_array: np.ndarray) -> np.ndarray:
+    """Compute HEALPix NESTED order-5 index for arrays of RA/Dec in degrees."""
     nside = 2 ** 5
     try:
         import healpy as hp
         theta = np.deg2rad(90.0 - np.asarray(dec_deg_array, dtype=float))
-        phi   = np.deg2rad(np.asarray(ra_deg_array,  dtype=float))
+        phi   = np.deg2rad(np.asarray(ra_deg_array, dtype=float))
         return hp.ang2pix(nside, theta, phi, nest=True)
     except Exception:
         pass
@@ -73,12 +94,13 @@ def k5_index_ra_dec(ra_deg_array: np.ndarray, dec_deg_array: np.ndarray) -> np.n
         pass
     raise RuntimeError("HEALPix indexing failed.")
 
-def arcsec2rad(arcsec: float) -> float: return arcsec / 206264.806
+def arcsec2rad(arcsec: float) -> float:
+    return arcsec / 206264.806
 
 def haversine_sep_arcsec(ra0_deg: float, dec0_deg: float,
                          ra_deg: np.ndarray, dec_deg: np.ndarray) -> np.ndarray:
     d2r = np.pi / 180.0
-    dra  = (ra_deg - ra0_deg) * d2r
+    dra  = (ra_deg  - ra0_deg) * d2r
     ddec = (dec_deg - dec0_deg) * d2r
     a = (np.sin(ddec/2.0)**2 +
          np.cos(dec0_deg*d2r)*np.cos(dec_deg*d2r)*np.sin(dra/2.0)**2)
@@ -106,23 +128,31 @@ def _choose_optical_radec(schema_names: List[str]) -> Optional[Tuple[str, str]]:
     return None
 
 def load_optical_positions(parquet_root: str) -> pd.DataFrame:
+    """Load optical positions and compute k5 index. Accepts local or s3:// root."""
     if parquet_root.startswith("s3://"):
-        ds = pds.dataset(parquet_root.replace("s3://", "", 1),
-                         format="parquet", filesystem=_mk_s3fs(anon=False))
+        ds = pds.dataset(
+            parquet_root.replace("s3://", "", 1),
+            format="parquet",
+            filesystem=_mk_s3fs(anon=False),
+        )
     else:
         ds = pds.dataset(parquet_root, format="parquet")
+
     names = ds.schema.names
     radec = _choose_optical_radec(names)
     if not radec:
         raise RuntimeError(f"Could not detect RA/Dec columns. Available: {', '.join(names)}")
+
     ra_name, dec_name = radec
     need = [ra_name, dec_name, "source_id"] if "source_id" in names else [ra_name, dec_name]
-    if "NUMBER" in names:   need.append("NUMBER")
-    if "tile_id" in names:  need.append("tile_id")
+    if "NUMBER"   in names: need.append("NUMBER")
+    if "tile_id"  in names: need.append("tile_id")
     if "image_id" in names: need.append("image_id")
+
     tbl = ds.to_table(columns=[c for c in need if c in names])
-    df = tbl.to_pandas()
-    df = df.rename(columns={ra_name: "opt_ra_deg", dec_name: "opt_dec_deg"})
+    df  = tbl.to_pandas()
+    df  = df.rename(columns={ra_name: "opt_ra_deg", dec_name: "opt_dec_deg"})
+
     if "source_id" not in df.columns:
         if "NUMBER" in df.columns:
             if "tile_id" in df.columns:
@@ -133,29 +163,31 @@ def load_optical_positions(parquet_root: str) -> pd.DataFrame:
                 df["source_id"] = df["NUMBER"].astype(str)
         else:
             df["source_id"] = df.index.astype(str)
+
     if df.empty:
         return df.assign(healpix_k5=pd.Series(dtype=np.int32))
+
     df["healpix_k5"] = k5_index_ra_dec(df["opt_ra_deg"].values, df["opt_dec_deg"].values)
     return df[["source_id","opt_ra_deg","opt_dec_deg","healpix_k5"]]
 
 def result_schema() -> pa.schema:
     return pa.schema([
         ("opt_source_id", pa.string()),
-        ("opt_ra_deg",   pa.float64()),
-        ("opt_dec_deg",  pa.float64()),
-        ("source_id",    pa.string()),
-        ("cntr",         pa.int64()),
-        ("ra",           pa.float64()),   # raw NEOWISE ra
-        ("dec",          pa.float64()),   # raw NEOWISE dec
-        ("mjd",          pa.float64()),
-        ("w1snr",        pa.float32()),
-        ("w2snr",        pa.float32()),
-        ("qual_frame",   pa.int64()),
-        ("qi_fact",      pa.float32()),
-        ("saa_sep",      pa.float32()),
-        ("moon_masked",  pa.string()),
-        ("sep_arcsec",   pa.float32()),
-        ("healpix_k5",   pa.int32()),
+        ("opt_ra_deg",    pa.float64()),
+        ("opt_dec_deg",   pa.float64()),
+        ("source_id",     pa.string()),
+        ("cntr",          pa.int64()),
+        ("ra",            pa.float64()),   # raw NEOWISER ra
+        ("dec",           pa.float64()),   # raw NEOWISER dec
+        ("mjd",           pa.float64()),
+        ("w1snr",         pa.float32()),
+        ("w2snr",         pa.float32()),
+        ("qual_frame",    pa.int64()),
+        ("qi_fact",       pa.float32()),
+        ("saa_sep",       pa.float32()),
+        ("moon_masked",   pa.string()),
+        ("sep_arcsec",    pa.float32()),
+        ("healpix_k5",    pa.int32()),
     ])
 
 def cast_table_to_schema(tbl: pa.Table, schema: pa.Schema) -> pa.Table:
@@ -164,8 +196,10 @@ def cast_table_to_schema(tbl: pa.Table, schema: pa.Schema) -> pa.Table:
         if f.name in tbl.column_names:
             col = tbl[f.name]
             if not col.type.equals(f.type):
-                try: col = pc.cast(col, f.type)
-                except Exception: col = pa.nulls(tbl.num_rows, type=f.type)
+                try:
+                    col = pc.cast(col, f.type)
+                except Exception:
+                    col = pa.nulls(tbl.num_rows, type=f.type)
             arrays.append(col); names.append(f.name)
         else:
             arrays.append(pa.nulls(tbl.num_rows, type=f.type)); names.append(f.name)
@@ -173,24 +207,28 @@ def cast_table_to_schema(tbl: pa.Table, schema: pa.Schema) -> pa.Table:
 
 def _bbox_filter_for_ra_dec(opt_part_df: pd.DataFrame, arcsec_radius: float):
     delta_deg = math.degrees(arcsec2rad(arcsec_radius))
-    ra_vals  = opt_part_df["opt_ra_deg"].values % 360.0
-    dec_vals = opt_part_df["opt_dec_deg"].values
-    ra_min = float(np.min(ra_vals)) - delta_deg
-    ra_max = float(np.max(ra_vals)) + delta_deg
+    ra_vals   = opt_part_df["opt_ra_deg"].values % 360.0
+    dec_vals  = opt_part_df["opt_dec_deg"].values
+    ra_min = float(np.min(ra_vals))  - delta_deg
+    ra_max = float(np.max(ra_vals))  + delta_deg
     dec_min = float(np.min(dec_vals)) - delta_deg
     dec_max = float(np.max(dec_vals)) + delta_deg
+
     ra = pc.field("ra"); dec = pc.field("dec")
     if ra_min < 0.0:
-        f_ra = ((ra >= 0.0)&(ra <= ra_max)) | (ra >= (ra_min + 360.0))
+        f_ra = ((ra >= 0.0) & (ra <= ra_max)) | (ra >= (ra_min + 360.0))
     elif ra_max >= 360.0:
-        f_ra = ((ra >= ra_min)&(ra < 360.0)) | (ra <= (ra_max - 360.0))
+        f_ra = ((ra >= ra_min) & (ra < 360.0)) | (ra <= (ra_max - 360.0))
     else:
         f_ra = (ra >= ra_min) & (ra <= ra_max)
     f_dec = (dec >= dec_min) & (dec <= dec_max)
     return f_ra & f_dec
 
 def _tap_pushdown_filter():
-    # Only schema-stable numeric gates pushed down; moon_masked handled post-read.
+    """
+    Push down only schema-stable numeric gates.
+    moon_masked == '00' is enforced AFTER read on arrays (type-agnostic).
+    """
     return (
         (pc.field("qual_frame") > pc.scalar(0)) &
         (pc.field("qi_fact")    > pc.scalar(0.0)) &
@@ -198,6 +236,17 @@ def _tap_pushdown_filter():
         (pc.field("w1snr")      >= pc.scalar(5.0)) &
         (pc.field("mjd")        <= pc.scalar(59198.0))
     )
+
+def parse_years_arg(years_arg: str) -> List[str]:
+    env = os.environ.get("NEOWISE_YEARS", "").strip()
+    if not years_arg and env:
+        years_arg = env
+    if not years_arg:
+        # Default: all years + the small "addendum"
+        return [f"year{y}" for y in range(1, 12)] + ["addendum"]
+    return [p.strip() for p in years_arg.replace(",", " ").split() if p.strip()]
+
+# ----------------- core matching -----------------
 
 def match_k5(opt_part_df: pd.DataFrame,
              years: Iterable[str],
@@ -207,7 +256,7 @@ def match_k5(opt_part_df: pd.DataFrame,
     if opt_part_df.empty:
         return pa.Table.from_arrays([pa.array([], type=f.type) for f in sch], names=sch.names)
 
-    fs = _mk_s3fs(anon=True)
+    fs     = _mk_s3fs(anon=True)
     bbox_f = _bbox_filter_for_ra_dec(opt_part_df, arcsec_radius)
     tap_f  = _tap_pushdown_filter()
 
@@ -215,56 +264,69 @@ def match_k5(opt_part_df: pd.DataFrame,
     for yr in years:
         leaf = _irsa_year_leaf_path(yr, int(opt_part_df["healpix_k5"].iloc[0]))
         if not _leaf_exists(fs, leaf):
-            print(f"[WARN] Missing leaf for {yr}: {leaf}"); continue
-        ds_leaf = pds.dataset(leaf, format="parquet", filesystem=fs, partitioning="hive", 
-                              exclude_invalid_files=True)
-        fields  = set(ds_leaf.schema.names)
+            print(f"[WARN] Missing leaf for {yr}: {leaf}")
+            continue
 
+        ds_leaf = pds.dataset(
+            leaf, format="parquet", filesystem=fs, partitioning="hive",
+            exclude_invalid_files=True
+        )
+        fields   = set(ds_leaf.schema.names)
         required = ["ra","dec","mjd","source_id","cntr"]
-        want = list(dict.fromkeys(required + [c for c in neo_cols if c in fields]))
-        have = [c for c in want if c in fields]
+        want     = list(dict.fromkeys(required + [c for c in neo_cols if c in fields]))
+        have     = [c for c in want if c in fields]
         if not set(required).issubset(have):
-            print(f"[WARN] Missing required columns in {yr}: {leaf}"); continue
+            print(f"[WARN] Missing required columns in {yr}: {leaf}")
+            continue
 
-        # pushdown: RA/Dec bbox AND TAP gates
+        # pushdown: RA/Dec bbox AND numeric TAP gates (moon_masked handled post-read)
         filt = bbox_f & tap_f
         tbl  = ds_leaf.to_table(filter=filt, columns=have)
 
-        # Normalize moon_masked AFTER read: keep rows that are logically '00'
-        # Accept either numeric 0 or string "00"
+        # --- POST-READ normalization for moon_masked (PyArrow array-based) ---
+        # Accept logically '00' == {0, "0", "00"}
         if "moon_masked" in tbl.column_names and tbl.num_rows > 0:
-            mm_col = tbl["moon_masked"]  # Array, not Expression
-            # Keep if numeric 0
-            keep_num0 = pc.equal(pc.cast(mm_col, pa.int64()), pc.scalar(0))
-            # Or exactly the string "00"
-            keep_str00 = pc.equal(pc.cast(mm_col, pa.utf8()), pc.scalar("00"))
-            keep = pc.or_(keep_num0, keep_str00)
-            tbl = tbl.filter(keep)
+            mm_col = tbl["moon_masked"]  # Array (NOT an Expression)
+            # Try numeric comparison to 0
+            mm_num0 = None
+            try:
+                mm_num0 = pc.equal(pc.cast(mm_col, pa.int64(), safe=False), pa.scalar(0, pa.int64()))
+            except Exception:
+                mm_num0 = None
+            # String equals "00" or "0"
+            mm_str  = pc.cast(mm_col, pa.utf8(), safe=False)
+            mm_eq00 = pc.equal(mm_str, pa.scalar("00"))
+            mm_eq0  = pc.equal(mm_str, pa.scalar("0"))
+            keep    = mm_eq00 if mm_num0 is None else pc.or_(mm_eq00, mm_num0)
+            keep    = pc.or_(keep, mm_eq0)
+            tbl     = tbl.filter(keep)
 
-        if tbl.num_rows == 0: continue
+        if tbl.num_rows == 0:
+            continue
         neo_frames.append(tbl.to_pandas())
 
     if not neo_frames:
         return pa.Table.from_arrays([pa.array([], type=f.type) for f in sch], names=sch.names)
 
-    neo_df = pd.concat(neo_frames, ignore_index=True)
+    neo_df  = pd.concat(neo_frames, ignore_index=True)
     neo_ra  = neo_df["ra"].values
     neo_dec = neo_df["dec"].values
     delta_deg = math.degrees(arcsec2rad(arcsec_radius))
 
     out_rows = []
     for _, row in opt_part_df.iterrows():
-        ra0 = float(row["opt_ra_deg"]); dec0 = float(row["opt_dec_deg"])
+        ra0  = float(row["opt_ra_deg"]); dec0 = float(row["opt_dec_deg"])
         opt_id = row["source_id"]
-        m = ((neo_ra >= ra0 - delta_deg) & (neo_ra <= ra0 + delta_deg) &
+        m = ((neo_ra  >= ra0 - delta_deg) & (neo_ra  <= ra0 + delta_deg) &
              (neo_dec >= dec0 - delta_deg) & (neo_dec <= dec0 + delta_deg))
-        if not m.any(): continue
+        if not m.any():
+            continue
         sub = neo_df.loc[m, :]
-
         d_arcsec = haversine_sep_arcsec(ra0, dec0, sub["ra"].values, sub["dec"].values)
         within   = d_arcsec <= arcsec_radius
-        if not within.any(): continue
-        j = int(np.argmin(d_arcsec))
+        if not within.any():
+            continue
+        j   = int(np.argmin(d_arcsec))
         hit = sub.iloc[j].to_dict()
         hit.update({
             "sep_arcsec": float(d_arcsec[j]),
@@ -277,25 +339,21 @@ def match_k5(opt_part_df: pd.DataFrame,
 
     if not out_rows:
         return pa.Table.from_arrays([pa.array([], type=f.type) for f in sch], names=sch.names)
+
     out_df = pd.DataFrame(out_rows)
-    out = pa.Table.from_pandas(out_df, preserve_index=False)
+    out    = pa.Table.from_pandas(out_df, preserve_index=False)
     return cast_table_to_schema(out, sch)
 
-def parse_years_arg(years_arg: str) -> List[str]:
-    env = os.environ.get("NEOWISE_YEARS", "").strip()
-    if not years_arg and env:
-        years_arg = env
-    if not years_arg:
-        # Default: all years + addendum
-        return [f"year{y}" for y in range(1, 12)] + ["addendum"]
-    return [p.strip() for p in years_arg.replace(",", " ").split() if p.strip()]
+# ----------------- run & finalize -----------------
 
 def existing_k5_in_tmp(tmp_dir: str) -> set:
     out = set()
     for path in glob.glob(os.path.join(tmp_dir, "k5=*.parquet")):
         base = os.path.basename(path)
-        try: out.add(int(base.split("=")[1].split(".")[0]))
-        except Exception: continue
+        try:
+            out.add(int(base.split("=")[1].split(".")[0]))
+        except Exception:
+            continue
     return out
 
 def finalize_shards(tmp_dir: str, out_path: str, schema: pa.Schema):
@@ -306,35 +364,36 @@ def finalize_shards(tmp_dir: str, out_path: str, schema: pa.Schema):
     try:
         for p in shard_paths:
             tbl = pq.read_table(p)
-            if tbl.schema != schema: tbl = cast_table_to_schema(tbl, schema)
+            if tbl.schema != schema:
+                tbl = cast_table_to_schema(tbl, schema)
             writer.write_table(tbl)
     finally:
         writer.close()
     print(f"[DONE] Finalized {len(shard_paths)} shards → {out_path}")
 
 def main():
-    ap = argparse.ArgumentParser(description="NEOWISE sidecar (leaf-only, TAP-equivalent defaults)")
+    ap = argparse.ArgumentParser(description="NEOWISER S3 sidecar (leaf-only, TAP-equivalent defaults)")
     ap.add_argument("--years", type=str, default=os.environ.get("NEOWISE_YEARS", ""))
     ap.add_argument("--optical-root", type=str, default=DEFAULT_OPTICAL_PARQUET_ROOT)
-    ap.add_argument("--out-root",    type=str, default=DEFAULT_OUT_FLAGS_ROOT)
+    ap.add_argument("--out-root",     type=str, default=DEFAULT_OUT_FLAGS_ROOT)
     ap.add_argument("--radius-arcsec", type=float, default=5.0)  # TAP radius
     ap.add_argument("--parallel", choices=["none","pixel"], default="none")
-    ap.add_argument("--workers", type=int, default=0)
+    ap.add_argument("--workers",  type=int, default=0)
     ap.add_argument("--no-finalize", action="store_true")
-    ap.add_argument("--force", action="store_true")
-    ap.add_argument("--k5-limit", type=int, default=0)
-    ap.add_argument("--k5-include", type=str, default="")
+    ap.add_argument("--force",        action="store_true")
+    ap.add_argument("--k5-limit",     type=int, default=0)
+    ap.add_argument("--k5-include",   type=str, default="")
     args = ap.parse_args()
 
-    years = parse_years_arg(args.years)
-    optical_root = args.optical_root
-    out_root     = args.out_root
-    tmp_dir      = os.path.join(out_root, "tmp")
+    years       = parse_years_arg(args.years)
+    optical_root= args.optical_root
+    out_root    = args.out_root
+    tmp_dir     = os.path.join(out_root, "tmp")
     os.makedirs(tmp_dir, exist_ok=True)
 
     # log
     print(f"[INFO] PyArrow: {pa.__version__}")
-    print(f"[INFO] NEOWISE years: {years}")
+    print(f"[INFO] NEOWISER years: {years}")
     print(f"[INFO] Radius: {args.radius_arcsec:.2f}\"")
     print(f"[INFO] Optical root: {optical_root}")
     print(f"[INFO] Output root:  {out_root}")
@@ -354,12 +413,14 @@ def main():
             include = {int(x) for x in args.k5_include.replace(",", " ").split() if x.strip()}
         bins = [b for b in bins if b in include]
         print(f"[INFO] --k5-include={len(include)} → intersection={len(bins)}")
-        if not bins:
-            print("[WARN] 0 bins remain after include filter."); sys.exit(0)
+
+    if not bins:
+        print("[WARN] 0 bins remain after include filter."); sys.exit(0)
 
     if args.k5_limit and args.k5_limit < len(bins):
         bins = bins[:args.k5_limit]
         print(f"[INFO] Limiting to first {len(bins)} bins.")
+
     print(f"[INFO] k5 bins to process: {len(bins)}")
 
     to_skip = set() if args.force else existing_k5_in_tmp(tmp_dir)
@@ -387,31 +448,34 @@ def main():
     processed = written = skipped = 0
     if args.parallel == "pixel":
         import multiprocessing as mp
-        W = args.workers if args.workers>0 else min(8, (mp.cpu_count() or 8))
+        W = args.workers if args.workers > 0 else min(8, (mp.cpu_count() or 8))
         print(f"[INFO] Parallel=pixel, workers={W}")
         futs = {}
         with ThreadPoolExecutor(max_workers=W) as ex:
             for k5 in bins:
-                if (not args.force) and (k5 in to_skip): skipped += 1; continue
+                if (not args.force) and (k5 in to_skip):
+                    skipped += 1; continue
                 futs[ex.submit(process_one, int(k5))] = k5
             for i, fut in enumerate(as_completed(futs), 1):
                 k5, rows = fut.result()
                 processed += 1
                 if rows >= 0: written += rows
-                else: skipped += 1
+                else:         skipped += 1
                 if processed % 50 == 0 or processed == len(futs):
                     print(f"[INFO] {processed}/{len(futs)} (skipped={skipped}, rows={written})")
     else:
         for k5 in bins:
-            if (not args.force) and (k5 in to_skip): skipped += 1; continue
+            if (not args.force) and (k5 in to_skip):
+                skipped += 1; continue
             _, rows = process_one(int(k5))
             processed += 1
             if rows >= 0: written += rows
-            else: skipped += 1
+            else:         skipped += 1
             if processed % 50 == 0 or processed == len(bins):
                 print(f"[INFO] {processed}/{len(bins)} (skipped={skipped}, rows={written})")
 
     print(f"[INFO] Completed bins: {processed}, skipped: {skipped}, total rows: {written}")
+
     out_path = os.path.join(out_root, DEFAULT_OUT_FILE)
     if not args.no_finalize:
         finalize_shards(tmp_dir, out_path, sch)
