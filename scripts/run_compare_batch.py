@@ -1,39 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Run NEOWISER AWS comparison over a list of chunks, with stage controls:
+Run NEOWISER AWS comparison over a list of chunks, with stage controls.
+
+This version integrates the fixed comparator (comparator_aws_vs_tap_fixed.py) and
+captures its [SUMMARY] line to a consistent CSV (compare_summary.csv).
 
 Pipeline stages (per chunk):
-  1) Seed parquet from TAP CSV (make_optical_seed_from_TAPchunk.py)
-  2) Sidecar over NASA Parquet (neowise_s3_sidecar.py)  [EC2-only in ops policy]
+ 1) Seed parquet from TAP CSV (make_optical_seed_from_TAPchunk.py)
+ 2) Sidecar over NASA Parquet (neowise_s3_sidecar.py) [EC2-only]
   3) Formatter to positions<CID>_closest.csv (sidecar_to_closest_chunks.py)
-  4) Comparator AWS vs TAP (comparator_aws_vs_tap.py)
+ 4) Comparator AWS vs TAP (comparator_aws_vs_tap_fixed.py)
 
 Recommended host strategy:
-  - PROD:     --skip-sidecar --skip-formatter   (run seed + compare only)
-  - EC2:      --skip-seed --skip-compare        (run sidecar + formatter only)
-  - Full run: no skip flags (for controlled test boxes only)
+ - PROD: --skip-sidecar --skip-formatter (run seed + compare only)
+ - EC2 : --skip-seed --skip-compare (run sidecar + formatter only)
+ - Full : no skip flags (for controlled test boxes only)
 
 Inputs:
-  - --chunks-list text file containing chunk IDs (e.g., 00003)
-  - Per-chunk TAP files under --tap-root/<CID>/ :
-       positions_chunk_<CID>.csv   (seed source)
-       positions<CID>_closest.csv  (TAP reference for comparator)
-  - Optional: --s3-handshake s3://.../positions     (root containing <CID>/ folders)
-       If TAP files are missing locally, the script will attempt to fetch them from:
-         <s3-handshake>/<CID>/positions_chunk_<CID>.csv
-         <s3-handshake>/<CID>/positions<CID>_closest.csv
-         <s3-handshake>/<CID>/positions_chunk_<CID>.vot
-         <s3-handshake>/<CID>/positions<CID>_closest.qc.txt
+ - --chunks-list text file containing chunk IDs (e.g., 00003)
+ - Per-chunk TAP files under --tap-root/<CID>/ :
+   positions_chunk_<CID>.csv (seed source)
+   positions<CID>_closest.csv (TAP reference for comparator)
+ - Optional: --s3-handshake s3://.../positions (pull TAP files if missing)
 
-Outputs (kept separate from TAP):
-  - Seeds (optical parquet):  --optical-root-base/chunk_<CID>/part-<CID>.parquet
-  - Sidecar flags shards + ALL parquet: --out-root-base/ (safe to rsync/zip)
-  - AWS closest + comparator artifacts: --aws-closest-out-dir/
-  - Per-chunk logs: ./logs/compare_chunks/<CID>.log
-  - Summary CSV (comparator rows): <aws-closest-out-dir>/compare_summary.csv
+Outputs:
+ - Seeds (optical parquet): --optical-root-base/chunk_<CID>/part-<CID>.parquet
+ - Sidecar flags shards + ALL parquet: --out-root-base/
+ - AWS closest + comparator artifacts: --aws-closest-out-dir/
+ - Per-chunk logs: ./logs/compare_chunks/<CID>.log
+ - Summary CSV: <aws-closest-out-dir>/compare_summary.csv (new schema)
 """
-
 import argparse
 import os
 import re
@@ -42,9 +39,9 @@ import sys
 from pathlib import Path
 import csv
 import shlex
+import ast
 
-# ---------------- helpers ----------------
-
+# -------------------------- helpers --------------------------
 def run(cmd, log_file, cwd=None):
     """Run a command, stream to console and log, return rc."""
     if isinstance(cmd, (list, tuple)):
@@ -55,16 +52,20 @@ def run(cmd, log_file, cwd=None):
     with open(log_file, "a", encoding="utf-8") as lf:
         lf.write(f"\n[CMD] {cmd_display}\n")
         lf.flush()
-        proc = subprocess.Popen(
-            cmd, cwd=cwd, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True
-        )
-        for line in proc.stdout:
-            sys.stdout.write(line)
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True
+    )
+    lines = []
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        with open(log_file, "a", encoding="utf-8") as lf:
             lf.write(line)
-        rc = proc.wait()
+        lines.append(line)
+    rc = proc.wait()
+    with open(log_file, "a", encoding="utf-8") as lf:
         lf.write(f"\n[RC] {rc}\n")
-    return rc
+    return rc, "".join(lines)
 
 def ensure_dir(p):
     Path(p).mkdir(parents=True, exist_ok=True)
@@ -73,10 +74,10 @@ def file_exists(p):
     return Path(p).is_file()
 
 def s3_ls(path, log_file):
-    return run(["aws", "s3", "ls", path], log_file)
+    return run(["aws", "s3", "ls", path], log_file)[0]
 
 def s3_cp(src, dst, log_file):
-    return run(["aws", "s3", "cp", src, dst, "--only-show-errors"], log_file)
+    return run(["aws", "s3", "cp", src, dst, "--only-show-errors"], log_file)[0]
 
 def s3_sync_chunk(s3_base, cid, local_dir, log_file):
     """
@@ -88,12 +89,10 @@ def s3_sync_chunk(s3_base, cid, local_dir, log_file):
     ensure_dir(local_dir)
     src = f"{s3_base.rstrip('/')}/{cid}/"
     print(f"[INFO] S3 source for {cid}: {src}")
-
     # Verify source exists (best-effort)
     rc_ls = s3_ls(src, log_file)
     if rc_ls != 0:
         print(f"[WARN] S3 source not listable for {cid}: {src}")
-
     patterns = [
         f"positions{cid}_closest.csv",
         f"positions_chunk_{cid}.csv",
@@ -107,8 +106,7 @@ def s3_sync_chunk(s3_base, cid, local_dir, log_file):
     ]
     for pat in patterns:
         args.extend(["--include", pat])
-    rc_sync = run(args, log_file)
-
+    rc_sync, _ = run(args, log_file)
     # Post-sync verification; fallback cp if missing
     missing = [p for p in patterns if not file_exists(os.path.join(local_dir, p))]
     if missing:
@@ -119,41 +117,17 @@ def s3_sync_chunk(s3_base, cid, local_dir, log_file):
                 print(f"[ERR ] cp failed for {cid}: {p} (will continue; comparator may skip)")
     return rc_sync
 
-def parse_comparator_blocks(text):
-    """Parse comparator console output blocks -> dict of key metrics."""
-    out = {
-        "tap_rows": None, "aws_rows": None, "overlap_on_cntr": None,
-        "tap_only_on_cntr": None, "aws_only_on_cntr": None,
-        "tap_cntr_duplicates": None, "aws_cntr_duplicates": None,
-        "aws_gate_violations": None, "tap_gate_violations": None
-    }
-    # Coverage by cntr
-    m = re.search(r'Coverage \(by "cntr"\).*?\{([^\}]*)\}', text, re.S)
-    if m:
-        kvs = m.group(1)
-        def grab(name):
-            r = re.search(rf"'{re.escape(name)}':\s*([0-9]+)", kvs)
-            return int(r.group(1)) if r else None
-        out["tap_rows"] = grab("tap_rows")
-        out["aws_rows"] = grab("aws_rows")
-        out["overlap_on_cntr"] = grab("overlap_on_cntr")
-        out["tap_only_on_cntr"] = grab("tap_only_on_cntr")
-        out["aws_only_on_cntr"] = grab("aws_only_on_cntr")
-        out["tap_cntr_duplicates"] = grab("tap_cntr_duplicates")
-        out["aws_cntr_duplicates"] = grab("aws_cntr_duplicates")
-    # Gate checks
-    m2 = re.search(r"Gate checks on overlap \(by cntr\).*?\{([^\}]*)\}", text, re.S)
-    if m2:
-        kvs2 = m2.group(1)
-        def grab2(name):
-            r = re.search(rf"'{re.escape(name)}':\s*([0-9]+)", kvs2)
-            return int(r.group(1)) if r else None
-        out["aws_gate_violations"] = grab2("aws_gate_violations")
-        out["tap_gate_violations"] = grab2("tap_gate_violations")
-    return out
+def parse_summary(text):
+    """Extract the [SUMMARY] dict printed by comparator_aws_vs_tap_fixed.py."""
+    m = re.search(r"\[SUMMARY\]\s*(\{.*\})", text, re.S)
+    if not m:
+        return None
+    try:
+        return ast.literal_eval(m.group(1))
+    except Exception:
+        return None
 
-# ---------------- main driver ----------------
-
+# -------------------------- main driver --------------------------
 def main():
     ap = argparse.ArgumentParser(
         description="Run NEOWISER AWS compare over a list of chunks (stage-controlled)"
@@ -171,21 +145,20 @@ def main():
                     default="./data/local-cats/tmp/positions/aws_compare_out",
                     help="Directory to write AWS positions<CID>_closest.csv & compare_* files")
     ap.add_argument("--s3-handshake", default="",
-                    help="(Optional) s3://.../handshake/from-<host>/<RUN_ID>/positions "
-                         "(pull TAP files if missing)")
+                    help="(Optional) s3://.../handshake/from-<host>/<RUN_ID>/positions (pull TAP files if missing)")
     ap.add_argument("--workers", type=int, default=8,
                     help="Sidecar worker count (bounded)")
     ap.add_argument("--radius-arcsec", type=float, default=5.0,
                     help="Match radius (arcsec)")
     ap.add_argument("--stop-on-error", action="store_true",
                     help="Stop on first error; by default continue to next chunk")
-
     # Stage controls
     ap.add_argument("--skip-seed", action="store_true", help="Skip optical seed stage")
     ap.add_argument("--skip-sidecar", action="store_true", help="Skip sidecar stage (EC2-only normally)")
     ap.add_argument("--skip-formatter", action="store_true", help="Skip formatter stage")
     ap.add_argument("--skip-compare", action="store_true", help="Skip comparator stage")
-
+    # Comparator options (forwarded)
+    ap.add_argument("--unique-cntr", action="store_true", help="Forward to comparator: de-dup by cntr")
     args = ap.parse_args()
 
     # IO prep
@@ -193,13 +166,13 @@ def main():
     logs_root = "./logs/compare_chunks"
     ensure_dir(logs_root)
 
-    # Comparator summary CSV (append-only)
+    # Comparator summary CSV (append-only, new schema)
     summary_csv = os.path.join(args.aws_closest_out_dir, "compare_summary.csv")
     summary_fields = [
-        "chunk_id", "tap_rows", "aws_rows", "overlap_on_cntr",
-        "tap_only_on_cntr", "aws_only_on_cntr",
-        "tap_cntr_duplicates", "aws_cntr_duplicates",
-        "aws_gate_violations", "tap_gate_violations", "rc"
+        "chunk_id", "out_prefix", "key",
+        "n_overlap_total", "n_overlap_gated", "n_match", "n_mismatch",
+        "n_missing_in_aws", "n_missing_in_tap",
+        "ra_dec_atol_arcsec", "mjd_atol", "snr_rtol", "rc"
     ]
     if not file_exists(summary_csv):
         with open(summary_csv, "w", newline="", encoding="utf-8") as f:
@@ -219,7 +192,6 @@ def main():
         print(f"\n[RUN] Chunk {cid}")
         with open(log_file, "w", encoding="utf-8") as lf:
             lf.write(f"[RUN] Chunk {cid}\n")
-
         tap_dir = os.path.join(args.tap_root, cid)
         tap_chunk_csv = os.path.join(tap_dir, f"positions_chunk_{cid}.csv")
         tap_closest_csv = os.path.join(tap_dir, f"positions{cid}_closest.csv")
@@ -230,7 +202,6 @@ def main():
         if (need_seed_src or need_tap_ref) and args.s3_handshake:
             print("[INFO] TAP files missing locally; attempting S3 sync...")
             s3_sync_chunk(args.s3_handshake, cid, tap_dir, log_file)
-
         # Re-evaluate presence after sync
         seed_src_present = file_exists(tap_chunk_csv)
         tap_ref_present  = file_exists(tap_closest_csv)
@@ -242,7 +213,7 @@ def main():
             if not seed_src_present:
                 print(f"[WARN] Seed source missing for {cid}: {tap_chunk_csv} (skipping seed)")
             else:
-                rc_seed = run([
+                rc_seed, _ = run([
                     sys.executable, "scripts/make_optical_seed_from_TAPchunk.py",
                     "--tap-chunk-csv", tap_chunk_csv,
                     "--chunk-id", cid,
@@ -252,13 +223,13 @@ def main():
                     print(f"[ERR ] seed failed for {cid}")
                     if args.stop_on_error:
                         sys.exit(rc_seed)
-                    # continue to next chunk; comparator could still run if AWS closest exists
+                    # continue; comparator could still run if AWS closest exists
         else:
             print(f"[SKIP] seed for {cid}")
 
         # 2) Sidecar (EC2-only in ops policy)
         if not args.skip_sidecar:
-            rc_sidecar = run([
+            rc_sidecar, _ = run([
                 sys.executable, "scripts/neowise_s3_sidecar.py",
                 "--optical-root", opt_chunk_root,
                 "--out-root", args.out_root_base,
@@ -281,7 +252,7 @@ def main():
             if not file_exists(sidecar_all):
                 print(f"[WARN] Sidecar ALL parquet missing: {sidecar_all} (skipping formatter for {cid})")
             else:
-                rc_fmt = run([
+                rc_fmt, _ = run([
                     sys.executable, "scripts/sidecar_to_closest_chunks.py",
                     "--sidecar-all", sidecar_all,
                     "--optical-root", opt_chunk_root,
@@ -301,18 +272,14 @@ def main():
             if not tap_ref_present:
                 print(f"[WARN] TAP closest missing for {cid}: {tap_closest_csv} (skipping compare)")
                 with open(summary_csv, "a", newline="", encoding="utf-8") as f:
-                    csv.DictWriter(f, fieldnames=summary_fields).writerow({
-                        "chunk_id": cid, "rc": 2
-                    })
+                    csv.DictWriter(f, fieldnames=summary_fields).writerow({"chunk_id": cid, "rc": 2})
                 if args.stop_on_error:
                     sys.exit(2)
                 continue
             if not file_exists(aws_closest_csv):
                 print(f"[WARN] AWS closest missing for {cid}: {aws_closest_csv} (skipping compare)")
                 with open(summary_csv, "a", newline="", encoding="utf-8") as f:
-                    csv.DictWriter(f, fieldnames=summary_fields).writerow({
-                        "chunk_id": cid, "rc": 3
-                    })
+                    csv.DictWriter(f, fieldnames=summary_fields).writerow({"chunk_id": cid, "rc": 3})
                 if args.stop_on_error:
                     sys.exit(3)
                 continue
@@ -325,26 +292,31 @@ def main():
                 "--out-prefix", out_prefix,
                 "--ra-dec-atol-arcsec", "0.10",
                 "--mjd-atol", "5e-5",
-                "--snr-rtol", "1e-3"
+                "--snr-rtol", "1e-3",
+                "--no-summary"
             ]
-            print("[CMD]", " ".join(shlex.quote(c) for c in comp_cmd))
-            with open(log_file, "a", encoding="utf-8") as lf:
-                lf.write("\n[CMD] " + " ".join(shlex.quote(c) for c in comp_cmd) + "\n")
-                proc = subprocess.Popen(comp_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-                comp_out = []
-                for line in proc.stdout:
-                    sys.stdout.write(line)
-                    lf.write(line)
-                    comp_out.append(line)
-                rc_comp = proc.wait()
-                lf.write(f"\n[RC] {rc_comp}\n")
+            if args.unique_cntr:
+                comp_cmd.append("--unique-cntr")
 
-            blocks = parse_comparator_blocks("".join(comp_out))
-            blocks["chunk_id"] = cid
-            blocks["rc"] = rc_comp
+            rc_comp, comp_output = run(comp_cmd, log_file)
+            summary = parse_summary(comp_output) or {}
+            summary_row = {
+                "chunk_id": cid,
+                "out_prefix": summary.get("out_prefix", Path(out_prefix).name),
+                "key": summary.get("key"),
+                "n_overlap_total": summary.get("n_overlap_total"),
+                "n_overlap_gated": summary.get("n_overlap_gated"),
+                "n_match": summary.get("n_match"),
+                "n_mismatch": summary.get("n_mismatch"),
+                "n_missing_in_aws": summary.get("n_missing_in_aws"),
+                "n_missing_in_tap": summary.get("n_missing_in_tap"),
+                "ra_dec_atol_arcsec": summary.get("ra_dec_atol_arcsec"),
+                "mjd_atol": summary.get("mjd_atol"),
+                "snr_rtol": summary.get("snr_rtol"),
+                "rc": rc_comp
+            }
             with open(summary_csv, "a", newline="", encoding="utf-8") as f:
-                csv.DictWriter(f, fieldnames=summary_fields).writerow(blocks)
-
+                csv.DictWriter(f, fieldnames=summary_fields).writerow(summary_row)
             print(f"[DONE] Chunk {cid} rc={rc_comp}")
         else:
             print(f"[SKIP] comparator for {cid}")
