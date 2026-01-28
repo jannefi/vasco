@@ -19,8 +19,7 @@ def main():
         roots = [ln.strip() for ln in f if ln.strip()]
 
     for i, opt_root in enumerate(roots, 1):
-        print(f"
-[RUN] {i}/{len(roots)}  optical_root={opt_root}")
+        print(f"[RUN] {i}/{len(roots)}  optical_root={opt_root}")
         rc = run([sys.executable, 'scripts/neowise_s3_sidecar.py',
                   '--optical-root', opt_root,
                   '--out-root', args.out_root,
@@ -36,8 +35,7 @@ def main():
         if rc != 0:
             print(f'[ERR] formatter failed for {opt_root}'); continue
 
-    print('
-[DONE] Batch complete.')
+    print('[DONE] Batch complete.')
 
 if __name__ == '__main__':
     sys.exit(main())
