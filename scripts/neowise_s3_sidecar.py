@@ -305,7 +305,7 @@ def main():
 
     print(f"[INFO] PyArrow: {pa.__version__}")
     print(f"[INFO] NEOWISER years: {years}")
-    print(f"[INFO] Radius: {a.radius_arcsec:.2f}"")
+    print(f"[INFO] Radius: {a.radius_arcsec:.2f}")
     print(f"[INFO] Optical root: {a.optical_root}")
     print(f"[INFO] Output root:  {a.out_root}")
 
@@ -374,7 +374,6 @@ def main():
 if __name__ == "__main__":
     try: main()
     except KeyboardInterrupt:
-        print("
-[WARN] Interrupted; shards safe to resume."); sys.exit(130)
+        print("[WARN] Interrupted; shards safe to resume."); sys.exit(130)
     except Exception as e:
         print(f"[ERROR] {e}", file=sys.stderr); sys.exit(1)
