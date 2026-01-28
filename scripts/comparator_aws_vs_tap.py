@@ -13,7 +13,7 @@ This version:
        <out_prefix>_mismatches.csv
        <out_prefix>_missing_in_aws.csv
        <out_prefix>_missing_in_tap.csv
-  * Appends a single‑line summary into sibling file `compare_summary.csv`.
+  * Optionally appends a single‑line summary into sibling file `compare_summary.csv` (disable via --no-summary).
 
 Usage example:
   python scripts/comparator_aws_vs_tap_fixed.py \
@@ -99,6 +99,8 @@ def main():
     ap.add_argument('--snr-rtol', type=float, default=1e-3)
     ap.add_argument('--unique-cntr', action='store_true',
                     help='Drop duplicate cntr rows on each side before overlap stats')
+    ap.add_argument('--no-summary', action='store_true',
+                    help='Do not append to compare_summary.csv')
     args = ap.parse_args()
 
     tap_raw = load_csv(args.tap)
@@ -183,8 +185,7 @@ def main():
     missing_in_aws.to_csv(f"{out_prefix}_missing_in_aws.csv", index=False)
     missing_in_tap.to_csv(f"{out_prefix}_missing_in_tap.csv", index=False)
 
-    # Summary row appended to sibling compare_summary.csv
-    summary_path = out_prefix.parent / 'compare_summary.csv'
+    # Summary row
     row = {
         'out_prefix': str(out_prefix.name),
         'key': key,
@@ -198,13 +199,16 @@ def main():
         'mjd_atol': args.mjd_atol,
         'snr_rtol': args.snr_rtol,
     }
-    df_row = pd.DataFrame([row])
-    if summary_path.exists():
-        df_row.to_csv(summary_path, mode='a', header=False, index=False)
-    else:
-        df_row.to_csv(summary_path, index=False)
-
     print(f"[SUMMARY] {row}")
+
+    # Optional: append to compare_summary.csv
+    if not args.no_summary:
+        summary_path = out_prefix.parent / 'compare_summary.csv'
+        df_row = pd.DataFrame([row])
+        if summary_path.exists():
+            df_row.to_csv(summary_path, mode='a', header=False, index=False)
+        else:
+            df_row.to_csv(summary_path, index=False)
 
 if __name__ == '__main__':
     main()
