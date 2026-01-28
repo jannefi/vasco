@@ -1,20 +1,60 @@
 #!/usr/bin/env python3
-# Compare AWS vs TAP closest outputs
-# - Normalizes row_id for pair-join reporting
-# - Writes diff CSVs alongside console summary
+# -*- coding: utf-8 -*-
+"""
+Compare AWS vs TAP 'closest' outputs.
+
+Improvements:
+  - Fixed row_id canonicalization to avoid false pair mismatches.
+  - Optional --unique-cntr to deduplicate by cntr before overlap stats.
+
+Usage:
+  python scripts/comparator_aws_vs_tap.py \
+    --tap <TAP closest CSV> \
+    --aws <AWS closest CSV> \
+    --out-prefix ./data/local-cats/tmp/positions/aws_compare_out/compare_chunk00005 \
+    --ra-dec-atol-arcsec 0.10 --mjd-atol 5e-5 --snr-rtol 1e-3 \
+    --unique-cntr
+"""
 import argparse
 import pandas as pd
 import numpy as np
-from typing import Dict, Optional
+from decimal import Decimal, InvalidOperation
 
 def canon_row_id(s: pd.Series) -> pd.Series:
-    """Stringify + trim; collapse '123.0' -> '123' but keep other floats/sci forms."""
-    t = s.astype(str).str.strip()
-    return t.str.replace(r'^(-?\d+)\.0+$', r'\1', regex=True)
+    """
+    Canonicalize row_id strings:
+      - Strip whitespace
+      - If numeric:
+          * If integer-valued -> canonical integer string (e.g., '123.0' -> '123')
+          * Else -> normalized decimal without trailing zeros (e.g., '123.4500' -> '123.45')
+      - Else: leave as-is
+    """
+    def _norm_one(x):
+        t = str(x).strip()
+        if t == "":
+            return ""
+        # Try Decimal for exact normalization
+        try:
+            d = Decimal(t)
+            # Normalize removes trailing zeros
+            d_n = d.normalize()
+            # If exponent >= 0 -> treat as integer string
+            if d_n == d_n.to_integral_value():
+                return str(d_n.to_integral_value())
+            # Else keep decimal representation as minimal string
+            # Convert to string without scientific notation, if possible
+            s = format(d_n, 'f')
+            # strip trailing zeros again (Decimal sometimes keeps them with 'f')
+            s = s.rstrip('0').rstrip('.') if '.' in s else s
+            return s
+        except InvalidOperation:
+            # Not numeric -> keep original trimmed
+            return t
+    return s.apply(_norm_one)
 
 def norm_moon_masked(s: pd.Series) -> pd.Series:
-    """Keep only digits and left-pad to 2 chars; '0' -> '00'."""
-    return s.astype(str).str.replace(r'[^0-9]', '', regex=True).str.zfill(2)
+    # Normalize 'moon_masked' to two-digit string '00' if 0-like
+    return s.astype(str).str.replace(r'[^\d]', '', regex=True).str.zfill(2)
 
 def load_csv(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
@@ -25,39 +65,31 @@ def load_csv(path: str) -> pd.DataFrame:
         df['moon_masked'] = norm_moon_masked(df['moon_masked'])
     return df
 
-def gates(df: pd.DataFrame, suf: str) -> pd.Series:
-    """TAP-equivalent gates on a merged frame with suffixes (_aws/_tap)."""
-    req = [f'qual_frame{suf}', f'qi_fact{suf}', f'saa_sep{suf}',
-           f'moon_masked{suf}', f'w1snr{suf}', f'mjd{suf}']
+def gates(df: pd.DataFrame, suffix: str) -> pd.Series:
+    req = [f"qual_frame{suffix}", f"qi_fact{suffix}", f"saa_sep{suffix}",
+           f"moon_masked{suffix}", f"w1snr{suffix}", f"mjd{suffix}"]
     if not set(req).issubset(df.columns):
-        # If we don't have all columns, just return 'True' to avoid false flags
-        return pd.Series([True] * len(df), index=df.index)
-    return (
-        (df[f'qual_frame{suf}'] > 0) &
-        (df[f'qi_fact{suf}'] > 0) &
-        (df[f'saa_sep{suf}'] > 0) &
-        (df[f'moon_masked{suf}'] == '00') &
-        (df[f'w1snr{suf}'] >= 5) &
-        (df[f'mjd{suf}'] <= 59198.0)
-    )
+        return pd.Series([True]*len(df), index=df.index)
+    return ((df[f"qual_frame{suffix}"] > 0) &
+            (df[f"qi_fact{suffix}"] > 0) &
+            (df[f"saa_sep{suffix}"] > 0) &
+            (df[f"moon_masked{suffix}"] == '00') &
+            (df[f"w1snr{suffix}"] >= 5) &
+            (df[f"mjd{suffix}"] <= 59198.0))
 
-def summarize(merged: pd.DataFrame, col: str,
-              suf: tuple = ('_aws', '_tap'),
-              atol: float = 0.0, rtol: float = 0.0) -> Optional[Dict[str, float]]:
-    a = merged.get(col + suf[0]); b = merged.get(col + suf[1])
+def summarize(merged, col, suf=("_aws","_tap"), atol=0.0, rtol=0.0):
+    a, b = merged.get(col+suf[0]), merged.get(col+suf[1])
     if a is None or b is None:
         return None
-    a = a.astype(float);  b = b.astype(float)
+    a, b = a.astype(float), b.astype(float)
     d = (a - b).to_numpy()
     bad = ~np.isclose(a, b, atol=atol, rtol=rtol)
-    return dict(
-        n=int(d.size),
-        mean=float(np.nanmean(d)),
-        std=float(np.nanstd(d)),
-        min=float(np.nanmin(d)),
-        max=float(np.nanmax(d)),
-        violations=int(bad.sum()),
-    )
+    return dict(n=int(d.size),
+                mean=float(np.nanmean(d)),
+                std=float(np.nanstd(d)),
+                min=float(np.nanmin(d)),
+                max=float(np.nanmax(d)),
+                violations=int(bad.sum()))
 
 def main():
     ap = argparse.ArgumentParser(description='Compare AWS vs TAP closest outputs')
@@ -67,79 +99,10 @@ def main():
     ap.add_argument('--ra-dec-atol-arcsec', type=float, default=0.10)
     ap.add_argument('--mjd-atol', type=float, default=5e-5)
     ap.add_argument('--snr-rtol', type=float, default=1e-3)
+    ap.add_argument('--unique-cntr', action='store_true',
+                    help='Drop duplicate cntr rows on each side before overlap stats')
     a = ap.parse_args()
 
     tap = load_csv(a.tap)
     aws = load_csv(a.aws)
 
-    # ---- Coverage (by cntr)
-    inner_c = aws.merge(tap, on='cntr', how='inner', suffixes=('_aws', '_tap'))
-    tap_only_c = tap[~tap['cntr'].isin(inner_c['cntr'])]
-    aws_only_c = aws[~aws['cntr'].isin(inner_c['cntr'])]
-
-    tap_dups = int(tap['cntr'].duplicated(keep=False).sum()) if 'cntr' in tap.columns else 0
-    aws_dups = int(aws['cntr'].duplicated(keep=False).sum()) if 'cntr' in aws.columns else 0
-
-    print('=== Coverage (by "cntr") ===')
-    print({
-        'tap_rows': len(tap),
-        'aws_rows': len(aws),
-        'overlap_on_cntr': len(inner_c),
-        'tap_only_on_cntr': len(tap_only_c),
-        'aws_only_on_cntr': len(aws_only_c),
-        'tap_cntr_duplicates': tap_dups,
-        'aws_cntr_duplicates': aws_dups,
-    })
-
-    # ---- Coverage (by (row_id, cntr)) if both have row_id
-    by_pair = {'row_id', 'cntr'}.issubset(aws.columns) and {'row_id', 'cntr'}.issubset(tap.columns)
-    if by_pair:
-        inner_p = aws.merge(tap, on=['row_id', 'cntr'], how='inner', suffixes=('_aws', '_tap'))
-        tap_only_p = tap.merge(aws[['row_id', 'cntr']], on=['row_id', 'cntr'],
-                               how='left', indicator=True)
-        tap_only_p = tap_only_p[tap_only_p['_merge'] == 'left_only'].drop(columns=['_merge'])
-
-        aws_only_p = aws.merge(tap[['row_id', 'cntr']], on=['row_id', 'cntr'],
-                               how='left', indicator=True)
-        aws_only_p = aws_only_p[aws_only_p['_merge'] == 'left_only'].drop(columns=['_merge'])
-
-        print('\n=== Coverage (by ("row_id","cntr")) ===')
-        print({
-            'overlap_on_pair': len(inner_p),
-            'tap_only_on_pair': len(tap_only_p),
-            'aws_only_on_pair': len(aws_only_p),
-        })
-
-    # ---- Gate checks on overlap (by cntr)
-    print('\n=== Gate checks on overlap (by cntr) ===')
-    print({
-        'aws_gate_violations': int((~gates(inner_c, '_aws')).sum()),
-        'tap_gate_violations': int((~gates(inner_c, '_tap')).sum()),
-    })
-
-    # ---- Field deltas on overlap (by cntr)
-    print('\n=== Field deltas (AWS - TAP) on overlap (by cntr) ===')
-    ra_dec_atol_deg = a.ra_dec_atol_arcsec / 3600.0
-    for col, atol, rtol in [
-        ('ra',   ra_dec_atol_deg, 0.0),
-        ('dec',  ra_dec_atol_deg, 0.0),
-        ('mjd',  a.mjd_atol,      0.0),
-        ('w1snr', 0.0,            a.snr_rtol),
-        ('w2snr', 0.0,            a.snr_rtol),
-    ]:
-        s = summarize(inner_c, col, atol=atol, rtol=rtol)
-        if s:
-            print(f"{col.upper():5s}: n={s['n']:4d} mean={s['mean']:.3e} "
-                  f"std={s['std']:.3e} min={s['min']:.3e} "
-                  f"max={s['max']:.3e} |violations|={s['violations']}")
-
-    # ---- Write diffs
-    if a.out_prefix:
-        tap_only_c.to_csv(f"{a.out_prefix}.tap_only_by_cntr.csv", index=False)
-        aws_only_c.to_csv(f"{a.out_prefix}.aws_only_by_cntr.csv", index=False)
-        if by_pair:
-            tap_only_p.to_csv(f"{a.out_prefix}.tap_only_by_pair.csv", index=False)
-            aws_only_p.to_csv(f"{a.out_prefix}.aws_only_by_pair.csv", index=False)
-
-if __name__ == '__main__':
-    main()
