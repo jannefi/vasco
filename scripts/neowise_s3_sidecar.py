@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NEOWISER sidecar via AWS S3 Parquet (anonymous) — k5 + neighbors
+NEOWISER sidecar via AWS S3 Parquet (anonymous) - k5 + neighbors
 Version: 2026-01-27g (k5 neighborhood; RA-wrap fix; addendum default; post-read moon_masked)
 
 TAP-equivalent defaults:
@@ -66,7 +66,6 @@ def k5_neighbors(k5: int) -> List[int]:
         nbs = hp.get_all_neighbours(nside, k5, nest=True)
         return [int(x) for x in nbs if x >= 0]
     except Exception:
-        # Fallback: no neighbors (still correct away from boundaries)
         return []
 
 def arcsec2rad(arcsec: float) -> float: return arcsec / 206264.806
@@ -177,7 +176,7 @@ def _tap_pushdown_filter():
             (pc.field("mjd")        <= pc.scalar(59198.0)))
 
 def parse_years_arg(years_arg: str) -> List[str]:
-    env = os.environ.get("NEOWISE_YEARS","").strip()
+    env = os.environ.get("NEOWISE_YEARS","" ).strip()
     if not years_arg and env: years_arg = env
     if not years_arg: return [f"year{y}" for y in range(1,12)] + ["addendum"]
     return [p.strip() for p in years_arg.replace(","," ").split() if p.strip()]
@@ -216,7 +215,6 @@ def match_k5(opt_part_df: pd.DataFrame, years: Iterable[str], arcsec_radius: flo
     bbox_f = _bbox_filter_for_ra_dec(opt_part_df, arcsec_radius)
     tap_f  = _tap_pushdown_filter()
 
-    # Seed pixel + neighbors
     seed_k5 = int(opt_part_df["healpix_k5"].iloc[0])
     pix_list = [seed_k5] + [n for n in k5_neighbors(seed_k5) if n != seed_k5]
 
@@ -230,7 +228,6 @@ def match_k5(opt_part_df: pd.DataFrame, years: Iterable[str], arcsec_radius: flo
         return pa.Table.from_arrays([pa.array([], type=f.type) for f in sch], names=sch.names)
 
     neo_df  = pd.concat(neo_frames, ignore_index=True)
-    # De-duplicate by detection (cntr); keep the nearest later
     neo_df  = neo_df.drop_duplicates(subset=["cntr"], keep="first")
 
     neo_ra  = neo_df["ra"].values
@@ -241,8 +238,7 @@ def match_k5(opt_part_df: pd.DataFrame, years: Iterable[str], arcsec_radius: flo
     for _, row in opt_part_df.iterrows():
         ra0_raw = float(row["opt_ra_deg"])
         dec0    = float(row["opt_dec_deg"])
-        ra0     = ra0_raw % 360.0  # wrap for per-row rectangular prefilter
-        # wrap-aware rectangular prefilter
+        ra0     = ra0_raw % 360.0
         ra_lo = (ra0 - ddeg) % 360.0
         ra_hi = (ra0 + ddeg) % 360.0
         if ra_lo <= ra_hi: m_ra = (neo_ra >= ra_lo) & (neo_ra <= ra_hi)
@@ -261,7 +257,7 @@ def match_k5(opt_part_df: pd.DataFrame, years: Iterable[str], arcsec_radius: flo
             "opt_source_id": str(row["source_id"]),
             "opt_ra_deg": ra0_raw,
             "opt_dec_deg": dec0,
-            "healpix_k5": seed_k5,  # report the seed pixel
+            "healpix_k5": seed_k5,
         })
         out_rows.append(hit)
 
@@ -288,7 +284,7 @@ def finalize_shards(tmp_dir: str, out_path: str, sch: pa.Schema):
             w.write_table(t)
     finally:
         w.close()
-    print(f"[DONE] Finalized {len(parts)} shards → {out_path}")
+    print(f"[DONE] Finalized {len(parts)} shards -> {out_path}")
 
 def main():
     ap = argparse.ArgumentParser(description="NEOWISER S3 sidecar (k5 + neighbors; TAP-equivalent)")
@@ -309,7 +305,7 @@ def main():
 
     print(f"[INFO] PyArrow: {pa.__version__}")
     print(f"[INFO] NEOWISER years: {years}")
-    print(f"[INFO] Radius: {a.radius_arcsec:.2f}\"")
+    print(f"[INFO] Radius: {a.radius_arcsec:.2f}"")
     print(f"[INFO] Optical root: {a.optical_root}")
     print(f"[INFO] Output root:  {a.out_root}")
 
@@ -378,6 +374,7 @@ def main():
 if __name__ == "__main__":
     try: main()
     except KeyboardInterrupt:
-        print("\n[WARN] Interrupted; shards safe to resume."); sys.exit(130)
+        print("
+[WARN] Interrupted; shards safe to resume."); sys.exit(130)
     except Exception as e:
         print(f"[ERROR] {e}", file=sys.stderr); sys.exit(1)
