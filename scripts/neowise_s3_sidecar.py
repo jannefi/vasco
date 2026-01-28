@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-NEOWISER sidecar via AWS S3 Parquet (anonymous) — leaf-targeted by k5
-Version: 2026-01-27f (RA-wrap fix in per-row filter; addendum default; post-read moon_masked)
+NEOWISER sidecar via AWS S3 Parquet (anonymous) — k5 + neighbors
+Version: 2026-01-27g (k5 neighborhood; RA-wrap fix; addendum default; post-read moon_masked)
 
 TAP-equivalent defaults:
  - years = year1..year11 + addendum
@@ -58,6 +58,17 @@ def k5_index_ra_dec(ra_deg_array: np.ndarray, dec_deg_array: np.ndarray) -> np.n
         pass
     raise RuntimeError("HEALPix indexing failed.")
 
+def k5_neighbors(k5: int) -> List[int]:
+    """Return up to 8 neighboring pixels for HEALPix order-5 nested."""
+    try:
+        import healpy as hp
+        nside = 2**5
+        nbs = hp.get_all_neighbours(nside, k5, nest=True)
+        return [int(x) for x in nbs if x >= 0]
+    except Exception:
+        # Fallback: no neighbors (still correct away from boundaries)
+        return []
+
 def arcsec2rad(arcsec: float) -> float: return arcsec / 206264.806
 
 def haversine_sep_arcsec(ra0: float, dec0: float, ra: np.ndarray, dec: np.ndarray) -> np.ndarray:
@@ -104,7 +115,7 @@ def load_optical_positions(root: str) -> pd.DataFrame:
         else:
             df["source_id"] = df.index.astype(str)
     if df.empty: return df.assign(healpix_k5=pd.Series(dtype=np.int32))
-    ra_mod = (df["opt_ra_deg"].astype(float) % 360.0).to_numpy()   # RA wrap for planning
+    ra_mod = (df["opt_ra_deg"].astype(float) % 360.0).to_numpy()
     dec    = df["opt_dec_deg"].astype(float).to_numpy()
     df["healpix_k5"] = k5_index_ra_dec(ra_mod, dec)
     return df[["source_id","opt_ra_deg","opt_dec_deg","healpix_k5"]]
@@ -171,6 +182,31 @@ def parse_years_arg(years_arg: str) -> List[str]:
     if not years_arg: return [f"year{y}" for y in range(1,12)] + ["addendum"]
     return [p.strip() for p in years_arg.replace(","," ").split() if p.strip()]
 
+def _normalize_moon_masked(tbl: pa.Table) -> pa.Table:
+    if "moon_masked" not in tbl.column_names or tbl.num_rows == 0:
+        return tbl
+    mm = tbl["moon_masked"]
+    mm_str = pc.cast(mm, pa.utf8(), safe=False)
+    keep = pc.equal(mm_str, pa.scalar("00"))
+    keep = pc.or_(keep, pc.equal(mm_str, pa.scalar("0")))
+    try:
+        keep = pc.or_(keep, pc.equal(pc.cast(mm, pa.int64(), safe=False), pa.scalar(0, pa.int64())))
+    except Exception:
+        pass
+    return tbl.filter(keep)
+
+def _read_one_leaf(fs, year: str, k5: int, bbox_f, tap_f, cols) -> Optional[pd.DataFrame]:
+    leaf = _irsa_year_leaf_path(year, k5)
+    if not _leaf_exists(fs, leaf): return None
+    ds_leaf = pds.dataset(leaf, format="parquet", filesystem=fs, partitioning="hive", exclude_invalid_files=True)
+    fields   = set(ds_leaf.schema.names)
+    required = {"ra","dec","mjd","source_id","cntr"}
+    if not required.issubset(fields): return None
+    want = list(dict.fromkeys(list(required) + [c for c in cols if c in fields]))
+    tbl  = ds_leaf.to_table(filter=bbox_f & tap_f, columns=want)
+    tbl  = _normalize_moon_masked(tbl)
+    return None if tbl.num_rows == 0 else tbl.to_pandas()
+
 def match_k5(opt_part_df: pd.DataFrame, years: Iterable[str], arcsec_radius: float, neo_cols: List[str]) -> pa.Table:
     sch = result_schema()
     if opt_part_df.empty:
@@ -179,41 +215,24 @@ def match_k5(opt_part_df: pd.DataFrame, years: Iterable[str], arcsec_radius: flo
     fs     = _mk_s3fs(True)
     bbox_f = _bbox_filter_for_ra_dec(opt_part_df, arcsec_radius)
     tap_f  = _tap_pushdown_filter()
+
+    # Seed pixel + neighbors
+    seed_k5 = int(opt_part_df["healpix_k5"].iloc[0])
+    pix_list = [seed_k5] + [n for n in k5_neighbors(seed_k5) if n != seed_k5]
+
     neo_frames = []
-
     for yr in years:
-        leaf = _irsa_year_leaf_path(yr, int(opt_part_df["healpix_k5"].iloc[0]))
-        if not _leaf_exists(fs, leaf):
-            print(f"[WARN] Missing leaf for {yr}: {leaf}"); continue
-        ds_leaf = pds.dataset(leaf, format="parquet", filesystem=fs, partitioning="hive", exclude_invalid_files=True)
-        fields   = set(ds_leaf.schema.names)
-        required = ["ra","dec","mjd","source_id","cntr"]
-        want     = list(dict.fromkeys(required + [c for c in neo_cols if c in fields]))
-        have     = [c for c in want if c in fields]
-        if not set(required).issubset(have):
-            print(f"[WARN] Missing required columns in {yr}: {leaf}"); continue
-
-        tbl = ds_leaf.to_table(filter=bbox_f & tap_f, columns=have)
-
-        # Post-read normalization: moon_masked logically '00'
-        if "moon_masked" in tbl.column_names and tbl.num_rows > 0:
-            mm = tbl["moon_masked"]
-            mm_num0 = None
-            try: mm_num0 = pc.equal(pc.cast(mm, pa.int64(), safe=False), pa.scalar(0, pa.int64()))
-            except Exception: mm_num0 = None
-            mm_str  = pc.cast(mm, pa.utf8(), safe=False)
-            keep = pc.equal(mm_str, pa.scalar("00"))
-            keep = pc.or_(keep, pc.equal(mm_str, pa.scalar("0")))
-            if mm_num0 is not None: keep = pc.or_(keep, mm_num0)
-            tbl = tbl.filter(keep)
-
-        if tbl.num_rows == 0: continue
-        neo_frames.append(tbl.to_pandas())
+        for k5 in pix_list:
+            df = _read_one_leaf(fs, yr, k5, bbox_f, tap_f, neo_cols)
+            if df is not None: neo_frames.append(df)
 
     if not neo_frames:
         return pa.Table.from_arrays([pa.array([], type=f.type) for f in sch], names=sch.names)
 
     neo_df  = pd.concat(neo_frames, ignore_index=True)
+    # De-duplicate by detection (cntr); keep the nearest later
+    neo_df  = neo_df.drop_duplicates(subset=["cntr"], keep="first")
+
     neo_ra  = neo_df["ra"].values
     neo_dec = neo_df["dec"].values
     ddeg    = math.degrees(arcsec2rad(arcsec_radius))
@@ -222,14 +241,12 @@ def match_k5(opt_part_df: pd.DataFrame, years: Iterable[str], arcsec_radius: flo
     for _, row in opt_part_df.iterrows():
         ra0_raw = float(row["opt_ra_deg"])
         dec0    = float(row["opt_dec_deg"])
-        ra0     = ra0_raw % 360.0  # --- RA wrap for per-row prefilter ---
+        ra0     = ra0_raw % 360.0  # wrap for per-row rectangular prefilter
         # wrap-aware rectangular prefilter
         ra_lo = (ra0 - ddeg) % 360.0
         ra_hi = (ra0 + ddeg) % 360.0
-        if ra_lo <= ra_hi:
-            m_ra = (neo_ra >= ra_lo) & (neo_ra <= ra_hi)
-        else:
-            m_ra = (neo_ra >= ra_lo) | (neo_ra <= ra_hi)
+        if ra_lo <= ra_hi: m_ra = (neo_ra >= ra_lo) & (neo_ra <= ra_hi)
+        else:              m_ra = (neo_ra >= ra_lo) | (neo_ra <= ra_hi)
         m_dec = (neo_dec >= (dec0 - ddeg)) & (neo_dec <= (dec0 + ddeg))
         m = m_ra & m_dec
         if not m.any(): continue
@@ -242,9 +259,9 @@ def match_k5(opt_part_df: pd.DataFrame, years: Iterable[str], arcsec_radius: flo
         hit.update({
             "sep_arcsec": float(d_arcsec[j]),
             "opt_source_id": str(row["source_id"]),
-            "opt_ra_deg": ra0_raw,     # preserve original reported RA
+            "opt_ra_deg": ra0_raw,
             "opt_dec_deg": dec0,
-            "healpix_k5": int(row["healpix_k5"]),
+            "healpix_k5": seed_k5,  # report the seed pixel
         })
         out_rows.append(hit)
 
@@ -274,7 +291,7 @@ def finalize_shards(tmp_dir: str, out_path: str, sch: pa.Schema):
     print(f"[DONE] Finalized {len(parts)} shards → {out_path}")
 
 def main():
-    ap = argparse.ArgumentParser(description="NEOWISER S3 sidecar (leaf-only, TAP-equivalent)")
+    ap = argparse.ArgumentParser(description="NEOWISER S3 sidecar (k5 + neighbors; TAP-equivalent)")
     ap.add_argument("--years", type=str, default=os.environ.get("NEOWISE_YEARS",""))
     ap.add_argument("--optical-root", type=str, default=DEFAULT_OPTICAL_PARQUET_ROOT)
     ap.add_argument("--out-root",     type=str, default=DEFAULT_OUT_FLAGS_ROOT)
