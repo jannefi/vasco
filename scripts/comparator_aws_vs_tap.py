@@ -65,23 +65,20 @@ def main():
     })
 
     if by_pair:
-        print('
-=== Coverage (by ("row_id","cntr")) ===')
+        print('=== Coverage (by ("row_id","cntr")) ===')
         print({
             'overlap_on_pair': len(inner_p),
             'tap_only_on_pair': len(tap_only_p),
             'aws_only_on_pair': len(aws_only_p),
         })
 
-    print('
-=== Gate checks on overlap (by cntr) ===')
+    print('=== Gate checks on overlap (by cntr) ===')
     print({
         'aws_gate_violations': int((~gates(inner_c,'_aws')).sum()),
         'tap_gate_violations': int((~gates(inner_c,'_tap')).sum()),
     })
 
-    print('
-=== Field deltas (AWS - TAP) on overlap (by cntr) ===')
+    print('=== Field deltas (AWS - TAP) on overlap (by cntr) ===')
     ra_dec_atol_deg = a.ra_dec_atol_arcsec/3600.0
     for col, atol, rtol in [('ra',ra_dec_atol_deg,0.0), ('dec',ra_dec_atol_deg,0.0),
                             ('mjd',a.mjd_atol,0.0), ('w1snr',0.0,a.snr_rtol), ('w2snr',0.0,a.snr_rtol)]:
