@@ -66,10 +66,8 @@ def main():
         qc_txt  = os.path.join(a.out_dir, f"positions{cid_str}_closest.qc.txt")
         sub.drop(columns=["chunk_id"]).to_csv(out_csv, index=False, float_format="%.10g")
         with open(qc_txt, "w") as f:
-            f.write(f"rows={len(sub)}
-")
-            f.write("columns=" + ",".join(sub.drop(columns=['chunk_id']).columns) + "
-")
+            f.write(f"rows={len(sub)}")
+            f.write("columns=" + ",".join(sub.drop(columns=['chunk_id']).columns) + "")
         print(f"[WRITE] {out_csv} (rows={len(sub)})")
 
 if __name__ == "__main__":
