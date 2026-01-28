@@ -40,15 +40,13 @@ def main():
     aws = pd.read_csv(a.aws)
     missing = [int(x) for x in a.cntrs.replace(',', ' ').split()]
     tap_sub = tap[tap['cntr'].isin(missing)].copy()
-    print('TAP rows for cntr(s):
-', tap_sub[["row_id","in_ra","in_dec","cntr"]])
+    print('TAP rows for cntr(s):', tap_sub[["row_id","in_ra","in_dec","cntr"]])
 
     fs = pafs.S3FileSystem(anonymous=True, region='us-west-2')
     for _, r in tap_sub.iterrows():
         ra0, dec0, cntr = float(r['in_ra']) % 360.0, float(r['in_dec']), int(r['cntr'])
         k5 = k5_index(ra0, dec0)
-        print(f"
-cntr={cntr} seed=({ra0:.9f},{dec0:.9f})  k5={k5}")
+        print(f"cntr={cntr} seed=({ra0:.9f},{dec0:.9f})  k5={k5}")
         hits=0
         for yr in years_all():
             path = leaf(yr, k5)
@@ -77,8 +75,7 @@ cntr={cntr} seed=({ra0:.9f},{dec0:.9f})  k5={k5}")
             print('  not present in any year/addendum leaf (post-fix)')
         else:
             print(f'  present in {hits} year leaf(s)')
-    print('
-Present in AWS closest CSV:', sorted(set(aws[aws['cntr'].isin(missing)]['cntr'].tolist())))
+    print('Present in AWS closest CSV:', sorted(set(aws[aws['cntr'].isin(missing)]['cntr'].tolist())))
 
 if __name__ == '__main__':
     main()
