@@ -92,3 +92,6 @@ post16_provenance:
 
 post16_epoch: post16_provenance
 	@python ./scripts/build_epoch_sidecar_from_tiles.py
+
+sync-tools:
+	bash scripts/update_aws_tools.sh
