@@ -251,3 +251,4 @@ __marimo__/
 .python-version
 scripts/automation/.sent_cids
 scripts/automation/.processed_cids
+.sent_cids
