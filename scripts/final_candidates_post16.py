@@ -15,17 +15,16 @@ Outputs:
 - <out_dir>/post16_match_summary.txt
 - Optional: <out_dir>/annotated.parquet if --publish-annotated
 
-Notes:
-- This script intentionally does not require NUMBER to be present in the IR sidecar (Oracle/TAP reserved-word reality).
-- It can still carry optical NUMBER through to the annotated output as opt_number for reference.
+Important DuckDB note:
+- DuckDB does NOT allow prepared parameters inside some DDL (e.g., CREATE VIEW ... read_parquet(?)).
+  We must inline the parquet path as a quoted SQL string literal instead.
 """
 
 import argparse
-import os
-import sys
 import hashlib
+import os
 from pathlib import Path
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple, List
 
 import numpy as np
 import pandas as pd
@@ -47,6 +46,11 @@ def parse_args():
     p.add_argument("--duckdb-path", default=None, help="Optional path for on-disk duckdb file (default: <out_dir>/post16_tmp.duckdb)")
     p.add_argument("--duckdb-threads", type=int, default=4, help="DuckDB threads")
     return p.parse_args()
+
+
+def sql_quote(s: str) -> str:
+    """Return a SQL single-quoted literal with embedded quotes escaped."""
+    return "'" + str(s).replace("'", "''") + "'"
 
 
 def pick_coords(schema_names: List[str], ra_override: Optional[str], dec_override: Optional[str]) -> Tuple[str, str]:
@@ -79,7 +83,6 @@ def normalize_row_id_series(existing: pd.Series) -> pd.Series:
             return pd.NA
         if isinstance(x, str):
             return x.strip()
-        # numeric -> int -> string (safe in Python for big ints)
         try:
             return str(int(x))
         except Exception:
@@ -148,17 +151,19 @@ def main():
 
     con = duckdb.connect(str(db_path))
     con.execute(f"PRAGMA threads={int(a.duckdb_threads)};")
-    con.execute("PRAGMA memory_limit='2GB';")  # conservative; adjust if needed
+    # Keep conservative memory limit; this is mostly disk-staged
+    con.execute("PRAGMA memory_limit='2GB';")
 
-    # IR view
-    con.execute("""
+    # ---- FIX: no prepared parameter in CREATE VIEW ----
+    ir_path_sql = sql_quote(a.irflags_parquet)
+    con.execute(f"""
         CREATE VIEW ir AS
         SELECT
             CAST(row_id AS VARCHAR) AS row_id,
             CAST(has_ir_match AS BOOLEAN) AS has_ir_match,
             CAST(dist_arcsec AS DOUBLE) AS dist_arcsec
-        FROM read_parquet(?);
-    """, [a.irflags_parquet])
+        FROM read_parquet({ir_path_sql});
+    """)
 
     # Staging table: store per-row dedupe keys and joined flags
     con.execute("""
@@ -180,9 +185,9 @@ def main():
     grid = float(a.dedupe_tol_arcsec) / 3600.0
     dropped_no_coords = 0
     staged_rows = 0
+    frag_count = 0
 
-    # Stream fragments
-    # Read minimal columns per fragment to reduce memory pressure
+    # Stream fragments; read minimal columns per fragment
     cols_to_read = [ra_col, dec_col]
     if optical_has_tile:
         cols_to_read.append("tile_id")
@@ -193,56 +198,57 @@ def main():
     cols_to_read += present_masks
 
     for idx, frag in enumerate(opt_ds.get_fragments(), 1):
+        frag_count = idx
         tbl = frag.to_table(columns=cols_to_read)
         if tbl.num_rows == 0:
             continue
 
         df = tbl.to_pandas()
-        # Normalize coords
         ra = pd.to_numeric(df[ra_col], errors="coerce")
         dec = pd.to_numeric(df[dec_col], errors="coerce")
 
-        # Build row_id (string digits)
+        # Build join key column
         if join_key == "row_id":
             if optical_has_row_id:
                 rid = normalize_row_id_series(df["row_id"])
             else:
-                # derive from tile_id + local_index exactly like extract_positions_for_neowise_se.py
                 tiles = df["tile_id"].astype(str).fillna("unknown")
                 n = len(df)
-                # If tile constant, compute faster
                 if tiles.nunique() == 1:
                     t = tiles.iloc[0]
                     rid = pd.Series([stable_row_id(t, i) for i in range(n)], dtype="string")
                 else:
                     rid = pd.Series([stable_row_id(tiles.iloc[i], i) for i in range(n)], dtype="string")
         else:
-            # join_key NUMBER
-            rid = pd.Series([pd.NA] * len(df), dtype="string")  # unused
+            # NUMBER join (not used in current row_id-sidecar workflow)
+            rid = pd.Series([pd.NA] * len(df), dtype="string")
 
-        # Compute dedupe keys (global approx dedupe uses rounded grid cell)
+        # Approx-dedupe keys
         dk_ra = np.rint(ra.to_numpy() / grid).astype("float64")
         dk_dec = np.rint(dec.to_numpy() / grid).astype("float64")
-        # Drop rows without coordinates from dedupe universe
         ok = np.isfinite(dk_ra) & np.isfinite(dk_dec)
         dropped_no_coords += int((~ok).sum())
 
-        # Prepare chunk dataframe for insert
+        # Prepare chunk for insert
+        if optical_has_number:
+            opt_number = pd.to_numeric(df["NUMBER"], errors="coerce").astype("Int64")[ok]
+        else:
+            opt_number = pd.Series([pd.NA] * int(ok.sum()), dtype="Int64")
+
         chunk = pd.DataFrame({
             "row_id": rid[ok].astype("string"),
-            "opt_number": pd.to_numeric(df["NUMBER"], errors="coerce").astype("Int64")[ok] if optical_has_number else pd.Series([pd.NA]*int(ok.sum()), dtype="Int64"),
+            "opt_number": opt_number,
             "dk_ra": dk_ra[ok].astype("int64"),
             "dk_dec": dk_dec[ok].astype("int64"),
         })
 
-        # Add masks (default False when absent)
+        # Masks (default False if missing)
         for c in mask_cols:
             if c in df.columns:
                 chunk[c] = df[c][ok].astype(bool)
             else:
                 chunk[c] = False
 
-        # Register and insert with join to IR
         con.register("chunk_df", chunk)
 
         con.execute("""
@@ -270,8 +276,7 @@ def main():
         if idx % 500 == 0:
             print(f"[INFO] fragments={idx} staged_rows={staged_rows} dropped_no_coords={dropped_no_coords}")
 
-    # Global approx dedupe: pick one row per (dk_ra, dk_dec) cell
-    # Deterministic choice: lowest row_id (string) per cell
+    # Global approx dedupe: pick one row per (dk_ra, dk_dec) cell (deterministic by lowest row_id)
     res = con.execute("""
         WITH ranked AS (
             SELECT *,
@@ -304,7 +309,7 @@ def main():
     summary_path = out_dir / "post16_match_summary.txt"
     with summary_path.open("w", encoding="utf-8") as f:
         f.write("POST16 SUMMARY (streaming + DuckDB staging)\n")
-        f.write(f"Optical fragments scanned: {len(list(opt_ds.get_fragments()))}\n")
+        f.write(f"Optical fragments scanned: {frag_count}\n")
         f.write(f"Rows staged (with finite coords): {staged_rows}\n")
         f.write(f"Rows dropped (no coords): {dropped_no_coords}\n")
         f.write(f"Total (after approx dedupe): {total}\n")
@@ -343,7 +348,7 @@ def main():
                 FROM ranked
                 WHERE rn = 1
             )
-            TO '{out_parquet.as_posix()}'
+            TO {sql_quote(out_parquet.as_posix())}
             (FORMAT PARQUET);
         """)
         print(f"[OK] Annotated dataset written: {out_parquet}")
