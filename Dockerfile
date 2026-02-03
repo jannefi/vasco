@@ -43,6 +43,7 @@ RUN pip install --no-cache-dir --break-system-packages \
     pandas \
     astroquery \
     scikit-learn \
+    duckdb \
     pyarrow
 
 # --- 5. Copy Local Application Assets ---
