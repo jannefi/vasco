@@ -66,7 +66,7 @@ def export_json_sidecar(irsa_dir: str, json_dir: str, plate_path: str, header):
     target = os.path.join(target_dir, side_name)
 
     meta = {
-        'source_file': os.path.abspath(plate_path),
+        'source_file': plate_path,
         'exported_utc': datetime.now(timezone.utc).isoformat(),
         'size_bytes': os.path.getsize(plate_path),
     }
