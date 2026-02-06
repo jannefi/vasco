@@ -82,6 +82,23 @@ post16_strict:
 		--irflags-parquet ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
 		--mask "exclude_ir_strict and exclude_hpm and exclude_skybot and exclude_supercosmos" \
 		--out  ./data/vasco-candidates/post16/candidates_final_core.parquet
+
+# === Post 1.6 strict partioned
+START_TIME = $(shell date '+%Y%m%d_%H%M%S')
+OUTDIR := ./data/vasco-candidates/post16/candidates_final_core_dataset/_$(START_TIME)
+
+.PHONY: post16_strict_partitioned
+post16_strict_partitioned:
+	@python ./scripts/export_masked_view.py \
+		--input-parquet ./data/local-cats/_master_optical_parquet \
+		--irflags-parquet ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL_by_tile_number.parquet \
+		--mask "exclude_ir_strict and not exclude_hpm and not exclude_skybot and not exclude_supercosmos" \
+		--dedupe-tol-arcsec 0.5 \
+		--out-dataset-dir (OUTDIR) \
+		--duckdb-threads 10 \
+		--duckdb-mem 10GB \
+		--temp-dir /tmp/vasco_duckdb_tmp
+
 # === Post 1.6 (Provenance & Epoch sidecars) ===
 PROV_SIDECAR := ./data/metadata/tile_provenance.parquet
 EPOCH_SIDECAR := ./data/metadata/epoch_by_source.parquet
