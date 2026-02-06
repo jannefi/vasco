@@ -503,6 +503,35 @@ Recent updates have made the VASCO pipeline more robust, reliable, and easier to
 
 #### Key Improvements
 
+- **New: `plate_region` enrichment** (DSS1-red REGION, e.g., `XE325`)
+We standardize on `plate_region` as the only plate identifier added to the master optical Parquet. It maps directly to the DSS1‑red header JSONs (≈937 unique regions) and avoids non‑portable IDs.  
+Requirement:a mapping CSV with at least `tile_id, irsa_region`. The default is `./data/metadata/tile_to_dss1red.csv`. 
+
+  How to generate the mapping from header JSONs:
+```bash
+python ./scripts/map_irsa_dss1red_to_tiles.py \
+  --tiles-dir ./data/tiles_by_sky \
+  --irsa-json-dir ./data/dss1red-headers \
+  --irsa-index ./data/metadata/irsa_dss1red_index.csv \
+  --out-dir ./data/metadata
+```
+  How to enrich the master optical Parquet (portable defaults):
+  ```bash
+# Uses /tmp by default; override TMP=/path with free disk space if needed
+TMP=/tmp/vasco_duckdb_tmp ./scripts/enrich_master_with_plate_region.sh \
+  MASTER=./data/local-cats/_master_optical_parquet \
+  MAPCSV=./data/metadata/tile_to_dss1red.csv \
+  OUT=./data/local-cats/_master_optical_parquet_with_plateid_region
+```
+Notes:
+
+If your mapping lives elsewhere, pass MAPCSV=/path/to/your.csv
+
+The mapping can be built from header JSONs; full FITS downloads are not required for enrichment
+
+The post‑pipeline writer merge_tile_catalogs.py also supports --plate-map-csv and will annotate plate_region at write time (see WORKFLOW)
+
+
 - **Transactional Downloads:**  
   FITS files are now downloaded to a temporary location and only moved to their final destination if they pass strict FITS and WCS sanity checks. This prevents incomplete or invalid files from appearing in the data tree.
 
