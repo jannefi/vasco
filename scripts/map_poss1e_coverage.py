@@ -1,17 +1,20 @@
-
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Map out STScI DSS POSS-I E (DSS1 Red) coverage over an RA/Dec grid.
-example use: 
-python map_poss1e_coverage.py \
-   --center-ra 150.000 --center-dec 20.000 \
-   --width-arcmin 240 --height-arcmin 240 \
-   --step-arcmin 60 \
-   --size-arcmin 20 \
-   --v 1 \
-   --sleep-ms 200 \
-   --out coverage_poss1e
+
+Example:
+  python map_poss1e_coverage.py \
+    --center-ra 150.000 --center-dec 20.000 \
+    --width-arcmin 240 --height-arcmin 240 \
+    --step-arcmin 60 \
+    --size-arcmin 20 \
+    --v 1 \
+    --sleep-ms 200 \
+    --timeout 60 \
+    --out coverage_poss1e
 """
+
 import argparse
 import csv
 import math
@@ -19,7 +22,6 @@ import sys
 import time
 from pathlib import Path
 from typing import Tuple
-
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -29,16 +31,15 @@ from io import BytesIO
 DEF_UA = 'VASCO/0.06.9 (+coverage map; STScI-only)'
 STSCI_URL = 'https://archive.stsci.edu/cgi-bin/dss_search'
 
-
 def build_params(ra_deg: float, dec_deg: float, size_arcmin: float, v: str = '1') -> Tuple[str, dict, dict]:
     params = {
-        'v': v, 'r': f'{ra_deg:.6f}', 'd': f'{dec_deg:.6f}', 'e': 'J2000',
+        'v': v,
+        'r': f'{ra_deg:.6f}', 'd': f'{dec_deg:.6f}', 'e': 'J2000',
         'h': f'{size_arcmin:.2f}', 'w': f'{size_arcmin:.2f}',
         'f': 'fits', 'c': 'none', 'fov': 'NONE', 'v3': ''
     }
     headers = {'User-Agent': DEF_UA}
     return STSCI_URL, params, headers
-
 
 def http_get(url: str, params: dict, headers: dict, timeout: float = 60.0) -> bytes:
     s = requests.Session()
@@ -48,7 +49,6 @@ def http_get(url: str, params: dict, headers: dict, timeout: float = 60.0) -> by
     r = s.get(url, params=params, headers=headers, timeout=timeout)
     r.raise_for_status()
     return r.content
-
 
 def normalize_fits(buf: bytes) -> bytes:
     # Accept gzipped FITS or plain FITS. Minimal check.
@@ -61,7 +61,6 @@ def normalize_fits(buf: bytes) -> bytes:
             return buf
     return buf
 
-
 def status_from_header(hdr) -> str:
     survey = str(hdr.get('SURVEY', '')).upper()
     # POSS-like
@@ -73,11 +72,10 @@ def status_from_header(hdr) -> str:
         return 'SERC_AAO'
     return 'UNKNOWN'
 
-
-def probe_point(ra_deg: float, dec_deg: float, size_arcmin: float, v: str = '1') -> Tuple[str, str, str, str]:
+def probe_point(ra_deg: float, dec_deg: float, size_arcmin: float, v: str = '1', timeout: float = 60.0) -> Tuple[str, str, str, str]:
     url, params, headers = build_params(ra_deg, dec_deg, size_arcmin, v=v)
     try:
-        buf = http_get(url, params, headers)
+        buf = http_get(url, params, headers, timeout=timeout)
         data = normalize_fits(buf)
         # FITS signature check (tolerant)
         sig = data[:80]
@@ -93,7 +91,6 @@ def probe_point(ra_deg: float, dec_deg: float, size_arcmin: float, v: str = '1')
     except Exception as e:
         return ('', '', '', f'ERROR_{type(e).__name__}')
 
-
 def main():
     ap = argparse.ArgumentParser(description='Map STScI DSS POSS-I E coverage over an RA/Dec grid (DSS1 via v=1).')
     ap.add_argument('--center-ra', type=float, required=True)
@@ -102,9 +99,10 @@ def main():
     ap.add_argument('--height-arcmin', type=float, required=True)
     ap.add_argument('--step-arcmin', type=float, default=60.0)
     ap.add_argument('--size-arcmin', type=float, default=20.0)
-    ap.add_argument('--v', type=str, default='1', choices=['1','2'])
+    ap.add_argument('--v', type=str, default='1', choices=['1', '2'])
     ap.add_argument('--out', type=str, default='coverage')
     ap.add_argument('--sleep-ms', type=int, default=200, help='Sleep ms between requests')
+    ap.add_argument('--timeout', type=float, default=60.0, help='HTTP timeout per request (seconds)')
     args = ap.parse_args()
 
     center_ra = args.center_ra
@@ -129,25 +127,26 @@ def main():
     print(f"[INFO] Center: RA={center_ra:.3f} Dec={center_dec:.3f}; width={w:.1f}' height={h:.1f}'")
 
     rows = []
-    for j, dec in enumerate(decs):
-        for i, ra in enumerate(ras):
-            survey, origin, plateid, status = probe_point(ra, dec, args.size_arcmin, v=args.v)
+    for dec in decs:
+        for ra in ras:
+            survey, origin, plateid, status = probe_point(ra, dec, args.size_arcmin, v=args.v, timeout=args.timeout)
             rows.append({'ra_deg': ra, 'dec_deg': dec, 'v': args.v,
                          'survey': survey, 'origin': origin, 'plateid': plateid, 'status': status})
             print(f'[POINT] RA={ra:.5f} Dec={dec:.5f} -> {status} (SURVEY={survey})')
             time.sleep(args.sleep_ms / 1000.0)
 
-    with out_csv.open('w', newline='') as f:
-        wcsv = csv.DictWriter(f, fieldnames=['ra_deg','dec_deg','v','survey','origin','plateid','status'])
+    with out_csv.open('w', newline='', encoding='utf-8') as f:
+        wcsv = csv.DictWriter(f, fieldnames=['ra_deg', 'dec_deg', 'v', 'survey', 'origin', 'plateid', 'status'])
         wcsv.writeheader()
         for r in rows:
             wcsv.writerow(r)
 
-    grid_chars = []
+    # Build ASCII map with proper newlines
+    grid_lines = []
     idx = 0
-    for j in range(len(decs)):
-        line = []
-        for i in range(len(ras)):
+    for _j in range(len(decs)):
+        line_chars = []
+        for _i in range(len(ras)):
             st = rows[idx]['status']
             if st == 'POSS':
                 ch = 'P'
@@ -159,16 +158,16 @@ def main():
                 ch = 'X'
             else:
                 ch = '.'
-            line.append(ch)
+            line_chars.append(ch)
             idx += 1
-        grid_chars.append(''.join(line))
+        grid_lines.append(''.join(line_chars))
 
-    with out_txt.open('w') as f:
-        f.write('# Coverage ASCII map (north at top):')
-        f.write('# Legend: P=POSS, S=SERC/AAO, U=SUPPLEMENTAL, X=ERROR, .=UNKNOWN')
-        f.write(f"# Center RA={center_ra:.3f} Dec={center_dec:.3f} | width={w:.1f}' height={h:.1f}' step={step:.1f}'")
-        for line in grid_chars:
-            f.write(line + '')
+    with out_txt.open('w', encoding='utf-8') as f:
+        f.write('# Coverage ASCII map (north at top)\n')
+        f.write('# Legend: P=POSS, S=SERC/AAO, U=SUPPLEMENTAL, X=ERROR, .=UNKNOWN\n')
+        f.write(f"# Center RA={center_ra:.3f} Dec={center_dec:.3f} width={w:.1f}' height={h:.1f}' step={step:.1f}'\n")
+        for line in grid_lines:
+            f.write(line + '\n')
 
     print(f'[INFO] Wrote CSV: {out_csv}')
     print(f'[INFO] Wrote ASCII map: {out_txt}')
