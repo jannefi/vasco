@@ -115,9 +115,19 @@ The main pipeline is run for each sky tile, typically in batches of hundreds or 
 
 ---
 
-## Post-Pipeline: Aggregation & Analysis (Updated for Parquet-first Workflow)
+## Post‑Pipeline: Aggregation & Analysis (Parquet‑first, Delta‑safe)
 
-After processing all tiles, the pipeline now **skips creation of a monolithic master CSV** and instead writes deduplicated tile-level catalogs directly as partitioned Parquet files. This approach is highly memory-efficient and scales to hundreds of millions of detections.
+After per‑tile processing, the pipeline writes deduplicated tile catalogs as a
+**partitioned master Parquet dataset**. To prevent accidental full re‑runs
+against NEOWISE, the publishing step is **append‑only** by default and the
+NEOWISE extractor is protected by **preflight** and **tripwire** guardrails.
+
+**Invariants**
+- Master Parquet lives at `./data/local-cats/_master_optical_parquet/`.
+- Files under the master are named `part-<tile_id>.parquet` per `(ra_bin, dec_bin)`.
+- Publishing **does not** touch existing parts unless `--overwrite` is used.
+- NEOWISE extraction reads only **changed** parts based on `{size, mtime_ns}`
+  compared to a JSON manifest. It can dry‑run without exporting.
 
 ---
 
@@ -130,7 +140,7 @@ After processing all tiles, the pipeline now **skips creation of a monolithic ma
 ---
 
 ### Step 1: Merge & Deduplicate Tile Catalogs (Parquet-first)
-- **Script:** `./scripts/merge_tile_catalogs.py --tiles-root ./data/tiles --tolerance-arcsec 0.5 --publish-parquet`
+- **Script:** `./scripts/merge_tile_catalogs.py --tiles-root ./data/tiles_by_sky --tolerance-arcsec 0.5 --bin-deg 5 --plate-map-csv ./data/metadata/tile_to_dss1red.csv --publish-parquet --only-new `
 - **Purpose:** Merge all per-tile SExtractor pass2 catalogs, deduplicate sources within a specified sky tolerance, and write results as partitioned Parquet files.
 - **Outputs:**
   - **Per tile:** `./data/tiles/<tileid>/catalogs/parquet/ra_bin=XX/dec_bin=YY/part-tile.parquet`
@@ -150,10 +160,25 @@ Please make sure to run each sub-step carefully exactly as described:
 
 ```bash
 # 0) Extract positions (if not done yet)
+# dry run first
 python ./scripts/extract_positions_for_neowise_se.py \
   --parquet-root ./data/local-cats/_master_optical_parquet \
-  --out-dir ./data/local-cats/tmp/positions \
-  --chunk-size 1000
+  --out-dir      ./data/local-cats/tmp/positions \
+  --chunk-size   20000 \
+  --manifest     ./data/local-cats/tmp/positions_manifest.json \
+  --require-nonempty-manifest \
+  --dry-run
+
+# if dry-run results look sane:
+
+python ./scripts/extract_positions_for_neowise_se.py \
+  --parquet-root ./data/local-cats/_master_optical_parquet \
+  --out-dir      ./data/local-cats/tmp/positions \
+  --chunk-size   20000 \
+  --manifest     ./data/local-cats/tmp/positions_manifest.json \
+  --require-nonempty-manifest \
+  --max-changed-parts 1200
+
 
 # 1) TAP async in 8 parallel jobs (convert→upload→poll→closest→QC per chunk)
 make post15_async_chunks
@@ -166,6 +191,19 @@ python ./scripts/qc_global_summary.py \
   ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
   ./data/local-cats/_master_optical_parquet_irflags/neowise_se_global_summary.csv
 ```
+
+### Safety & Recovery (NEOWISE delta runs)
+
+- **Never** publish with `--overwrite` unless you intend to reprocess specific tiles.
+  Overwriting updates file mtimes and would appear as “changed” to the extractor.
+- If you must republish a single tile, run:
+```bash
+  python ./scripts/merge_tile_catalogs.py \
+    --tiles-root ./data/tiles/tile-RAxxx-DECyyy \
+    --tolerance-arcsec 0.5 --bin-deg 5 \
+    --plate-map-csv ./data/metadata/tile_to_dss1red.csv \
+    --publish-parquet --overwrite --require-plate
+````
 
 ---
 
