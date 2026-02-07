@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Summarize VASCO runs to compact MD + CSVs (FAST v3 + IR flags),
-layout-aware: supports ./data/tiles and ./data/tiles_by_sky.
+Summarize VASCO runs to compact MD + CSVs (FAST v3 + IR flags).
 
-Fixes (2026-02):
-- Fix pandas IndexingError: "Unalignable boolean Series provided as indexer"
-  by ensuring boolean masks are aligned to df.index.
-- Fix IR any>=5 SNR calculation (use boolean OR).
-- Support new Post 1.6 NEOWISE sidecar schema:
-  (tile_id, NUMBER, has_ir_match, dist_arcsec) in addition to legacy schemas.
+v4.4 (2026-02-07)
+- Add --tiles-root (explicit tiles discovery; no symlink needed).
+- Auto-detect tiles when --tiles-root is omitted:
+    ./data/tiles_by_sky, then ./data/tiles, else under --data-dir.
+- Decouple output (--run) from tiles discovery.
+- Fix IR SNR any≥5 boolean OR.
+- Keep legacy behavior/outputs:
+    run_summary.md, run_summary.csv,
+    run_summary_tiles.csv, run_summary_tiles_counts.csv
 """
 
 import argparse
@@ -20,21 +22,58 @@ from typing import Dict, List, Tuple, Iterable
 import numpy as np
 import pandas as pd
 
-# ---------- layout helpers ----------
-def iter_tile_dirs_any(data_dir: Path) -> Iterable[Path]:
-    """Yield tile directories from flat and sharded layouts."""
-    tiles_flat = data_dir / "tiles"
-    tiles_sharded = data_dir / "tiles_by_sky"
-    if tiles_flat.exists():
-        for p in sorted(tiles_flat.glob("tile-*")):
+# ------------------------- layout helpers -------------------------
+def _iter_tiles_under(base: Path) -> Iterable[Path]:
+    """Yield tile dirs directly under either a tiles or a tiles_by_sky base."""
+    if not base.exists():
+        return
+    # tiles_by_sky pattern
+    if base.name == "tiles_by_sky" or (base / "ra_bin=0").exists():
+        for p in sorted(base.glob("ra_bin=*/dec_bin=*/tile-*")):
             if p.is_dir():
                 yield p
-    if tiles_sharded.exists():
-        for p in sorted(tiles_sharded.glob("ra_bin=*/dec_bin=*/tile-*")):
+    # tiles pattern
+    if base.name == "tiles" or any(base.glob("tile-*")):
+        for p in sorted(base.glob("tile-*")):
             if p.is_dir():
                 yield p
 
-# ---------- existing helpers over CSVs ----------
+def discover_tiles_root(tiles_root_opt: str, data_dir: Path) -> Path:
+    """
+    Decide where tiles live:
+      1) --tiles-root if provided
+      2) ./data/tiles_by_sky else ./data/tiles (repo defaults)
+      3) <data_dir>/tiles_by_sky else <data_dir>/tiles
+    """
+    if tiles_root_opt:
+        tr = Path(tiles_root_opt)
+        return tr
+
+    candidates = [
+        Path("./data/tiles_by_sky"),
+        Path("./data/tiles"),
+        data_dir / "tiles_by_sky",
+        data_dir / "tiles",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    # Fallback to the most likely
+    return Path("./data/tiles_by_sky")
+
+def list_tile_dirs(tiles_base: Path) -> List[Path]:
+    # If user passed the actual tiles folder (tiles or tiles_by_sky), scan it.
+    dirs = list(_iter_tiles_under(tiles_base))
+    if dirs:
+        return dirs
+    # Otherwise, treat as parent and try both children if present.
+    for child in ("tiles_by_sky", "tiles"):
+        c = tiles_base / child
+        if c.exists():
+            dirs.extend(list(_iter_tiles_under(c)))
+    return sorted(set(dirs))
+
+# --------------------- existing helpers over CSVs --------------------
 def rows_minus_header(path: str) -> int:
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
@@ -52,7 +91,7 @@ def glob_sum(patterns):
             total += rows_minus_header(p)
     return total
 
-# ---------- per-tile summaries ----------
+# ------------------------- per-tile summaries ------------------------
 def summarize_tile(tile_dir: Path) -> Dict:
     catalogs = tile_dir / "catalogs"
     xmatch = tile_dir / "xmatch"
@@ -75,17 +114,16 @@ def summarize_tile(tile_dir: Path) -> Dict:
     gaia_ids = glob_sum(str(xmatch / "gaia_ids.csv"))
     ps1_ids  = glob_sum(str(xmatch / "ps1_ids.csv"))
     any_ids  = glob_sum(str(xmatch / "matched_any_ids.csv"))
-    any_ids_u = glob_sum(str(xmatch / "matched_any_ids_unique.csv"))
+    any_ids_u= glob_sum(str(xmatch / "matched_any_ids_unique.csv"))
 
-    gaia_un_cdss = glob_sum(str(xmatch / "sex_gaia_unmatched_cdss.csv"))
-    ps1_un_cdss  = glob_sum(str(xmatch / "sex_ps1_unmatched_cdss.csv"))
-    gaia_un_cdss_pos = glob_sum(str(xmatch / "sex_gaia_unmatched_cdss_pos.csv"))
-    ps1_un_cdss_pos  = glob_sum(str(xmatch / "sex_ps1_unmatched_cdss_pos.csv"))
-    gaia_un_local = glob_sum(str(xmatch / "sex_gaia_unmatched.csv"))
-    ps1_un_local  = glob_sum(str(xmatch / "sex_ps1_unmatched.csv"))
-    usnob_un = glob_sum(str(xmatch / "sex_usnob_unmatched.csv"))
-
-    final_no_opt = glob_sum(str(xmatch / "no_optical_counterparts.csv"))
+    gaia_un_cdss    = glob_sum(str(xmatch / "sex_gaia_unmatched_cdss.csv"))
+    ps1_un_cdss     = glob_sum(str(xmatch / "sex_ps1_unmatched_cdss.csv"))
+    gaia_un_cdss_pos= glob_sum(str(xmatch / "sex_gaia_unmatched_cdss_pos.csv"))
+    ps1_un_cdss_pos = glob_sum(str(xmatch / "sex_ps1_unmatched_cdss_pos.csv"))
+    gaia_un_local   = glob_sum(str(xmatch / "sex_gaia_unmatched.csv"))
+    ps1_un_local    = glob_sum(str(xmatch / "sex_ps1_unmatched.csv"))
+    usnob_un        = glob_sum(str(xmatch / "sex_usnob_unmatched.csv"))
+    final_no_opt    = glob_sum(str(xmatch / "no_optical_counterparts.csv"))
 
     return {
         "tile_id": tile_dir.name,
@@ -106,8 +144,9 @@ def summarize_tile(tile_dir: Path) -> Dict:
         "final_no_optical_counterparts": final_no_opt,
     }
 
-def summarize_tiles_root(tiles_root: Path) -> Tuple[Dict, List[str], List[Dict]]:
-    tile_dirs = list(iter_tile_dirs_any(tiles_root.parent))
+def summarize_tiles(tiles_base: Path) -> Tuple[Dict, List[str], List[Dict]]:
+    tile_dirs = list_tile_dirs(tiles_base)
+
     per_tile_counts = [summarize_tile(td) for td in tile_dirs]
 
     agg = {
@@ -119,6 +158,7 @@ def summarize_tiles_root(tiles_root: Path) -> Tuple[Dict, List[str], List[Dict]]
         "gaia_unmatched_cdss_pos": 0, "ps1_unmatched_cdss_pos": 0,
         "gaia_unmatched_local": 0, "ps1_unmatched_local": 0, "usnob_unmatched": 0,
         "final_no_optical_counterparts": 0,
+
         "tiles_total": len(tile_dirs),
         "tiles_with_catalogs": 0,
         "tiles_with_xmatch": 0,
@@ -126,6 +166,7 @@ def summarize_tiles_root(tiles_root: Path) -> Tuple[Dict, List[str], List[Dict]]
         "tiles_with_wcsfix": 0,
     }
 
+    # presence flags per tile
     for td in tile_dirs:
         has_catalog = (td / "catalogs" / "sextractor_pass2.csv").exists()
         xm_dir = td / "xmatch"
@@ -140,6 +181,7 @@ def summarize_tiles_root(tiles_root: Path) -> Tuple[Dict, List[str], List[Dict]]
         if (td / "final_catalog_wcsfix.csv").exists():
             agg["tiles_with_wcsfix"] += 1
 
+    # numeric sums
     for r in per_tile_counts:
         for k in [
             "detections", "gaia_matched", "ps1_matched",
@@ -170,23 +212,17 @@ def summarize_tiles_root(tiles_root: Path) -> Tuple[Dict, List[str], List[Dict]]
     tile_names = [r["tile_id"] for r in per_tile_counts]
     return agg, tile_names, per_tile_counts
 
-# ---------- IR flags summary ----------
+# ------------------------- IR flags summary -------------------------
 def safe_num(df: pd.DataFrame, name: str, default: float = 0.0) -> pd.Series:
     if name in df.columns:
         return pd.to_numeric(df[name], errors="coerce")
     return pd.Series(np.full(len(df), default), index=df.index, dtype="float64")
 
 def _aligned_sep_series(df: pd.DataFrame) -> pd.Series:
-    """
-    Return a sep-like Series aligned to df.index.
-    Preference order:
-    - dist_arcsec (new sidecar)
-    - sep_arcsec  (legacy)
-    - else all-NaN (aligned)
-    """
-    if "dist_arcsec" in df.columns:
+    """Return a sep-like Series aligned to df.index."""
+    if "dist_arcsec" in df.columns:  # new sidecar
         return pd.to_numeric(df["dist_arcsec"], errors="coerce")
-    if "sep_arcsec" in df.columns:
+    if "sep_arcsec" in df.columns:   # legacy
         return pd.to_numeric(df["sep_arcsec"], errors="coerce")
     return pd.Series(np.full(len(df), np.nan), index=df.index, dtype="float64")
 
@@ -205,7 +241,6 @@ def summarize_ir_flags(flags_parquet: Path, radius_arcsec: float) -> Dict:
     }
     if not flags_parquet.exists():
         return out
-
     try:
         df = pd.read_parquet(flags_parquet, engine="pyarrow")
     except Exception:
@@ -216,12 +251,10 @@ def summarize_ir_flags(flags_parquet: Path, radius_arcsec: float) -> Dict:
     if total == 0:
         return out
 
-    # Determine strict matches
-    if "has_ir_match" in df.columns:
-        # New Post 1.6 sidecar
+    # strict match determination
+    if "has_ir_match" in df.columns:  # new Post 1.6 sidecar
         strict_mask = df["has_ir_match"].astype("boolean").fillna(False)
-    elif "ir_match_strict" in df.columns:
-        # Legacy boolean-ish column
+    elif "ir_match_strict" in df.columns:  # legacy boolean-ish
         strict_mask = (
             df["ir_match_strict"]
             .replace({"True": True, "False": False})
@@ -229,38 +262,34 @@ def summarize_ir_flags(flags_parquet: Path, radius_arcsec: float) -> Dict:
             .fillna(False)
         )
     else:
-        # Legacy sep-only: sep <= radius
         sep = _aligned_sep_series(df)
         strict_mask = sep.le(radius_arcsec).fillna(False)
 
     matches = df.loc[strict_mask]
-
     mcount = int(len(matches))
     out["ir_strict_matches"] = mcount
     out["ir_strict_match_rate"] = (mcount / total) if total else 0.0
 
-    # Separation stats (use whatever sep column exists, aligned)
     sep_m = _aligned_sep_series(matches).dropna()
     out["ir_sep_arcsec_median"] = float(sep_m.median()) if len(sep_m) else float("nan")
-    out["ir_sep_arcsec_p95"] = float(sep_m.quantile(0.95)) if len(sep_m) else float("nan")
+    out["ir_sep_arcsec_p95"]    = float(sep_m.quantile(0.95)) if len(sep_m) else float("nan")
 
-    # SNR stats (only if present; else zeros)
+    # SNR stats
     w1 = safe_num(df, "w1snr")
     w2 = safe_num(df, "w2snr")
-    out["ir_w1_snr_ge5"] = int((w1 >= 5).sum())
-    out["ir_w2_snr_ge5"] = int((w2 >= 5).sum())
+    out["ir_w1_snr_ge5"]  = int((w1 >= 5).sum())
+    out["ir_w2_snr_ge5"]  = int((w2 >= 5).sum())
     out["ir_any_snr_ge5"] = int(((w1 >= 5) | (w2 >= 5)).sum())
 
-    # Optional bins for partition diagnostics
+    # Optional bin diagnostics
     if ("ra_bin" in df.columns) and ("dec_bin" in df.columns):
         rb = df["ra_bin"]
         db = df["dec_bin"]
         out["ir_rows_with_bins"] = int((rb.notna() & db.notna()).sum())
         out["ir_partitions_with_bins"] = int(len(pd.DataFrame({"rb": rb, "db": db}).dropna().drop_duplicates()))
-
     return out
 
-# ---------- writers ----------
+# ------------------------------ writers ------------------------------
 def write_compact_lines_md(base_dir: str, sections: List[Dict]) -> str:
     out = Path(base_dir) / "run_summary.md"
     lines = ["# VASCO Run Summary\n\n"]
@@ -369,44 +398,47 @@ def write_tiles_counts_csv(base_dir: str, per_tile_counts: List[Dict]) -> str:
             w.writerow({k: r.get(k, 0) for k in cols})
     return str(out)
 
-# ---------- CLI ----------
+# ---------------------------------- CLI ----------------------------------
 def main():
     ap = argparse.ArgumentParser(description="Summarize VASCO runs (layout-aware).")
-    ap.add_argument("--data-dir", default="./data")
-    ap.add_argument("--run", default=None)
+    ap.add_argument("--data-dir", default="./data", help="Base data dir (used for autodetection)")
+    ap.add_argument("--run", default=None, help="Output directory (created if needed)")
     ap.add_argument(
         "--irflags-parquet",
         default="./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL_by_tile_number.parquet",
         help="NEOWISE IR flags parquet (supports legacy and Post-1.6 schemas).",
     )
     ap.add_argument("--radius-arcsec", type=float, default=5.0)
+    ap.add_argument("--tiles-root", default="", help="Explicit tiles root (…/tiles_by_sky or …/tiles).")
     args = ap.parse_args()
 
     flags_p = Path(args.irflags_parquet)
 
-    if args.run is None:
-        tiles_root_parent = Path(args.data_dir)
-        core, tile_names, per_tile_counts = summarize_tiles_root(tiles_root_parent / "tiles")
-        core.update({"label": Path(args.data_dir).name})
-    else:
-        run_dir = Path(args.run)
-        core, tile_names, per_tile_counts = summarize_tiles_root(run_dir / "tiles")
-        core.update({"label": run_dir.name})
+    # Output base
+    base = args.run if args.run is not None else args.data_dir
+    Path(base).mkdir(parents=True, exist_ok=True)
 
+    # Tiles discovery (explicit -> autodetect)
+    tiles_base = discover_tiles_root(args.tiles_root, Path(args.data_dir))
+
+    core, tile_names, per_tile_counts = summarize_tiles(tiles_base)
+    core.update({"label": Path(base).name})
     core["ir_radius_arcsec"] = args.radius_arcsec
+
+    # IR summary
     ir = summarize_ir_flags(flags_p, args.radius_arcsec)
     core.update(ir)
 
-    base = args.run if args.run is not None else args.data_dir
-    md_path = write_compact_lines_md(base, [core])
-    csv_path = write_summary_csv(base, [core])
-    tiles_csv = write_tiles_names_csv(base, tile_names)
-    tiles_counts_csv = write_tiles_counts_csv(base, per_tile_counts)
+    # Write artifacts
+    md_path        = write_compact_lines_md(base, [core])
+    csv_path       = write_summary_csv(base, [core])
+    tiles_csv      = write_tiles_names_csv(base, tile_names)
+    tiles_counts   = write_tiles_counts_csv(base, per_tile_counts)
 
     print("Wrote", md_path)
     print("Wrote", csv_path)
     print("Wrote", tiles_csv)
-    print("Wrote", tiles_counts_csv)
+    print("Wrote", tiles_counts)
     return 0
 
 if __name__ == "__main__":
