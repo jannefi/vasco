@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-render_plate_tile_coverage.py — Per-plate overlays of all tiles (v4.3)
+render_plate_tile_coverage.py — Per-plate overlays of all tiles (v4.4)
 
-What's new in v4.3
-------------------
-• Robust plate-header resolver (accepts *_30arcmin.fits in sidecars, normalizes
-  to full-plate header JSON).
-• Orientation enforcement (auto East-left, North-up) so plate overlays match
-  Aladin/DSS display conventions regardless of header omissions.
-• Keeps robust JSON loader; retains v4.2 geometry (no plate WCS required).
+Changes in v4.4:
+- Repo-first header resolution by REGION (plate_id) via metadata/plates/headers/dss1red_{REGION}.fits.header.json
+- Legacy header directories are OFF by default (can be enabled via --legacy-roots)
+- Output naming and index CSV include plate_id
+- Geometry/orientation behavior unchanged from v4.3
 """
 
 import argparse
@@ -26,8 +24,7 @@ from astropy.wcs import WCS
 RAD2AS = 206264.80624709636
 SIZE_TAG_RE = re.compile(r'_(\d+(?:\.\d+)?)arcmin', flags=re.IGNORECASE)
 
-# ----------------------- Robust JSON loader ----------------------
-
+# ---------------------------- Robust JSON loader ----------------------------
 def robust_json_load(path: Path):
     try:
         b = path.read_bytes()
@@ -51,9 +48,8 @@ def robust_json_load(path: Path):
     except Exception as e:
         return None, f'json decode failed after fallbacks: {e}'
 
-# ---------------------------- Helpers ----------------------------
-
-PATTERNS = ['tile-RA*-DEC*','tile_RA*_DEC*','tile-RA*_DEC*','tile_RA*-DEC*']
+# --------------------------------- Helpers ---------------------------------
+PATTERNS = ['tile-RA* -DEC*', 'tile_RA*_DEC*', 'tile-RA*_DEC*', 'tile_RA* -DEC*'.replace(' ', '')]
 
 def iter_tile_dirs(tiles_root: Path):
     if tiles_root.exists():
@@ -67,7 +63,6 @@ def iter_tile_dirs(tiles_root: Path):
             for p in sorted(sharded.glob(f'ra_bin=*/dec_bin=*/{pat}')):
                 if p.is_dir():
                     yield p
-
 
 def read_title_sidecar(raw_dir: Path):
     sidecar = raw_dir / 'dss1red_title.txt'
@@ -84,7 +79,6 @@ def read_title_sidecar(raw_dir: Path):
         pass
     return out
 
-
 def pick_header_dict(any_json: dict):
     if isinstance(any_json, dict):
         if 'header' in any_json and isinstance(any_json['header'], dict):
@@ -93,23 +87,7 @@ def pick_header_dict(any_json: dict):
             return any_json['selected']
     return any_json
 
-
-def _candidate_plate_header_names(base_name: str):
-    base = Path(base_name).name
-    no_size = SIZE_TAG_RE.sub('', base)
-    cands = []
-    if no_size.endswith('.fits'):
-        cands += [f"{no_size}.header.json", f"{no_size[:-5]}.header.json", f"{no_size}.fits.header.json"]
-    else:
-        cands += [f"{no_size}.header.json", f"{no_size}.fits.header.json"]
-    cands.append(f"{base}.header.json")
-    out, seen = [], set()
-    for n in cands:
-        if n and n not in seen:
-            out.append(n); seen.add(n)
-    return out
-
-
+# ------------------------- Tile WCS (from tile raw) -------------------------
 def load_tile_wcs(tile_dir: Path):
     raw = tile_dir / 'raw'
     cands = sorted(list(raw.glob('*.header.json')))
@@ -143,33 +121,7 @@ def load_tile_wcs(tile_dir: Path):
     except Exception as e:
         return None, int(hdr.get('NAXIS1',0) or 0), int(hdr.get('NAXIS2',0) or 0), f'tile WCS build failed: {e}'
 
-
-def resolve_plate_json_from_fits(tile_dir: Path, roots: list[Path]):
-    raw = tile_dir / 'raw'
-    meta = read_title_sidecar(raw)
-    fits_name = (meta.get('FITS','') or '').strip()
-    if not fits_name:
-        return None
-    base = Path(fits_name).name
-    header_names = _candidate_plate_header_names(base)
-    for root in roots:
-        for hn in header_names:
-            cand = root / hn
-            if cand.exists():
-                return cand
-        nb = SIZE_TAG_RE.sub('', base)
-        nb = nb[:-5] if nb.endswith('.fits') else nb
-        matches = list(root.glob(f"{nb}*.header.json"))
-        if len(matches) == 1:
-            return matches[0]
-    for hn in header_names:
-        cand2 = raw / hn
-        if cand2.exists():
-            return cand2
-    return None
-
-# ----------------------------- geometry -----------------------------
-
+# ---------------------------- Plate projection ------------------------------
 def radec_to_plate_pixels_gnomonic(ra_deg: np.ndarray, dec_deg: np.ndarray, plate: dict) -> np.ndarray:
     ra0 = math.radians(plate['center_ra'])
     de0 = math.radians(plate['center_dec'])
@@ -179,28 +131,26 @@ def radec_to_plate_pixels_gnomonic(ra_deg: np.ndarray, dec_deg: np.ndarray, plat
     dra = (ra - ra0 + np.pi) % (2*np.pi) - np.pi
     sin_de = np.sin(de); cos_de = np.cos(de)
     sin_de0= math.sin(de0); cos_de0= math.cos(de0)
-    cos_dra= np.cos(dra); sin_dra= np.sin(dra)
+    cos_dra= np.cos(dra);  sin_dra= np.sin(dra)
     denom = (sin_de0*sin_de + cos_de0*cos_de*cos_dra)
     denom = np.where(np.abs(denom) < 1e-12, np.nan, denom)
-    xi = (cos_de * sin_dra) / denom
+    xi  = (cos_de * sin_dra) / denom
     eta = (cos_de0*sin_de - sin_de0*cos_de*cos_dra) / denom
-    xi_as = xi * RAD2AS; eta_as = eta * RAD2AS
+    xi_as  = xi  * RAD2AS; eta_as = eta * RAD2AS
     x = cx + (xi_as / as_px_x)
     y = cy + (eta_as / as_px_y)
     return np.stack([x, y], axis=1)
-
 
 def enforce_east_left_orientation(plate: dict):
     eps_arcsec = 5.0
     eps_deg = eps_arcsec / 3600.0
     ra0 = plate['center_ra']; dec0 = plate['center_dec']
-    xy_east = radec_to_plate_pixels_gnomonic(np.array([ra0 + eps_deg]), np.array([dec0]), plate)[0]
+    xy_east  = radec_to_plate_pixels_gnomonic(np.array([ra0 + eps_deg]), np.array([dec0]), plate)[0]
     xy_north = radec_to_plate_pixels_gnomonic(np.array([ra0]), np.array([dec0 + eps_deg]), plate)[0]
     cx, cy = plate['cx'], plate['cy']
-    flip_x = (xy_east[0] > cx)
-    flip_y = (xy_north[1] < cy)
+    flip_x = (xy_east[0]  > cx)   # East should be left (x decreasing)
+    flip_y = (xy_north[1] < cy)   # North should be up   (y increasing)
     return {'flip_x': bool(flip_x), 'flip_y': bool(flip_y)}
-
 
 def min_edge_distance_px(points_xy: np.ndarray, plate_nx: int, plate_ny: int) -> float:
     if points_xy.size == 0:
@@ -218,12 +168,26 @@ def min_edge_distance_px(points_xy: np.ndarray, plate_nx: int, plate_ny: int) ->
         return float('nan')
     return float(min(dvals))
 
-# --------------------------------- main ---------------------------------
+# ---------------------------- Plate resolver -------------------------------
+def resolve_repo_plate_json_by_region(tile_dir: Path, repo_headers: Path):
+    """Use REGION from dss1red_title.txt to build canonical repo header path."""
+    meta = read_title_sidecar(tile_dir / 'raw')
+    region = (meta.get('REGION','') or '').strip()
+    if not region:
+        return None, None
+    cand = repo_headers / f'dss1red_{region}.fits.header.json'
+    return (cand if cand.exists() else None), region
 
+# ---------------------------------- main -----------------------------------
 def main():
-    ap = argparse.ArgumentParser(description='Render per-plate coverage overlays of all tiles (v4.3, robust resolver + orientation)')
+    ap = argparse.ArgumentParser(
+        description='Render per-plate coverage overlays of all tiles (v4.4, repo-first REGION resolver)'
+    )
     ap.add_argument('--tiles-root', default='./data/tiles')
-    ap.add_argument('--dss-headers', default='./data/dss1red-headers,./data/dss1red_headers')
+    ap.add_argument('--headers-dir', default='metadata/plates/headers',
+                    help='Repo headers root (default: metadata/plates/headers)')
+    ap.add_argument('--legacy-roots', default='',  # optional comma list; empty by default per policy
+                    help='Optional comma-separated legacy header roots to search AFTER repo (default: empty/disabled)')
     ap.add_argument('--out-dir', default='./data/metadata/plate_coverage')
     ap.add_argument('--fast-square', action='store_true')
     ap.add_argument('--label', action='store_true', help='label tiles with tile_id')
@@ -233,31 +197,63 @@ def main():
     args = ap.parse_args()
 
     tiles_root = Path(args.tiles_root)
-    dss_roots = [Path(s.strip()) for s in args.dss_headers.split(',') if s.strip()]
+    repo_headers = Path(args.headers_dir)
+    legacy_roots = [Path(s.strip()) for s in args.legacy_roots.split(',') if s.strip()]
     out_dir = Path(args.out_dir)
 
-    plate_to_tiles = {}
+    # Map: plate_id -> { 'path': Path(header_json), 'tiles': [tile_dirs] }
+    plate_map = {}
+
     for td in iter_tile_dirs(tiles_root):
-        pj = resolve_plate_json_from_fits(td, dss_roots)
+        pj, region = resolve_repo_plate_json_by_region(td, repo_headers)
+        if pj is None and legacy_roots:
+            # Optional, last resort: search legacy roots by FITS name from title.txt (kept for transitional use)
+            meta = read_title_sidecar(td / 'raw')
+            fits_name = (meta.get('FITS','') or '').strip()
+            base = Path(fits_name).name
+            # Try a few name variants
+            names = []
+            no_size = SIZE_TAG_RE.sub('', base)
+            if no_size.endswith('.fits'):
+                names += [f"{no_size}.header.json", f"{no_size[:-5]}.header.json", f"{no_size}.fits.header.json"]
+            else:
+                names += [f"{no_size}.header.json", f"{no_size}.fits.header.json"]
+            names.append(f"{base}.header.json")
+            found = None
+            for root in legacy_roots:
+                for n in names:
+                    cand = root / n
+                    if cand.exists():
+                        found = cand
+                        break
+                if found:
+                    break
+            pj = found
+            # region may still be known from the title sidecar
         if pj is None:
             continue
-        plate_to_tiles.setdefault(pj, []).append(td)
+        plate_id = region if region else pj.stem.replace('.fits.header','').replace('dss1red_','')
+        rec = plate_map.setdefault(plate_id, {'path': pj, 'tiles': []})
+        rec['tiles'].append(td)
 
-    # index CSV
+    # Write index CSV (by plate_id)
     out_dir.mkdir(parents=True, exist_ok=True)
-    index_csv = out_dir/'plates_with_tiles.csv'
+    index_csv = out_dir / 'plates_with_tiles.csv'
     with index_csv.open('w', newline='', encoding='utf-8') as f:
-        w = csv.DictWriter(f, fieldnames=['plate_json','tiles_count'])
+        w = csv.DictWriter(f, fieldnames=['plate_id','tiles_count','figure'])
         w.writeheader()
-        for pj, tiles in sorted(plate_to_tiles.items(), key=lambda kv: kv[0].name):
-            w.writerow({'plate_json': pj.name, 'tiles_count': len(tiles)})
+        for plate_id in sorted(plate_map.keys()):
+            fig_name = f'dss1red_{plate_id}.png'
+            w.writerow({'plate_id': plate_id, 'tiles_count': len(plate_map[plate_id]['tiles']), 'figure': fig_name})
 
-    # overlays per plate
+    # Render overlays
     count = 0
-    for pj, tiles in sorted(plate_to_tiles.items(), key=lambda kv: kv[0].name):
+    for plate_id in sorted(plate_map.keys()):
         if args.max_plates and count >= args.max_plates:
             break
-        plate, perr = (None, None)
+        pj = plate_map[plate_id]['path']
+        tiles = plate_map[plate_id]['tiles']
+
         data, err = robust_json_load(pj)
         if data is None:
             print(f'[SKIP] plate {pj.name}: robust_json_load failed: {err}')
@@ -281,11 +277,10 @@ def main():
             continue
 
         orient = enforce_east_left_orientation(plate)
+        fig_path = out_dir / f'dss1red_{plate_id}.png'
 
-        name = pj.stem.replace('.header','')
-        fig_path = out_dir / f'{name}.png'
         fig, ax = plt.subplots(figsize=(9, 9))
-        ax.set_title(f'{name} — tiles: {len(tiles)}', fontsize=12)
+        ax.set_title(f'{plate_id} — tiles: {len(tiles)}', fontsize=12)
         ax.plot([1, plate['nax1'], plate['nax1'], 1, 1], [1, 1, plate['nax2'], plate['nax2'], 1], 'k-', lw=1.0, alpha=0.8)
         ax.set_xlim(0, plate['nax1']+1); ax.set_ylim(0, plate['nax2']+1)
         ax.set_aspect('equal', adjustable='box'); ax.grid(ls=':', alpha=0.3)
@@ -296,13 +291,12 @@ def main():
             if twcs is None or not tnx or not tny:
                 print(f'[SKIP] tile {td.name}: {terr}')
                 continue
-            # polygon from 4 corners + close
             corners = np.array([[1,1],[tnx,1],[tnx,tny],[1,tny],[1,1]], dtype=float)
-            mids = np.array([[tnx/2,1],[tnx,tny/2],[tnx/2,tny],[1,tny/2]], dtype=float)
+            mids    = np.array([[tnx/2,1],[tnx,tny/2],[tnx/2,tny],[1,tny/2]], dtype=float)
             samples = np.vstack([corners, mids])
-            world = twcs.all_pix2world(samples, 1)
-            poly_world = world[:5,:]
-            poly = radec_to_plate_pixels_gnomonic(poly_world[:,0], poly_world[:,1], plate)
+            world   = twcs.all_pix2world(samples, 1)
+            poly_w  = world[:5,:]
+            poly    = radec_to_plate_pixels_gnomonic(poly_w[:,0], poly_w[:,1], plate)
             if orient['flip_x']:
                 poly[:,0] = 2.0*plate['cx'] - poly[:,0]
             if orient['flip_y']:
@@ -325,7 +319,7 @@ def main():
         count += 1
         print(f'[OK] wrote {fig_path} (tiles={len(tiles)}) orient: flip_x={orient["flip_x"]} flip_y={orient["flip_y"]}')
 
-    print(f'[OK] wrote index: {index_csv} plates={len(plate_to_tiles)}')
+    print(f'[OK] wrote index: {index_csv} plates={len(plate_map)}')
 
 if __name__ == '__main__':
     main()
