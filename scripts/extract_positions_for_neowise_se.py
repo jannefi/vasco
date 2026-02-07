@@ -3,40 +3,33 @@
 """
 Incremental extractor for (row_id, ra, dec) from a partitioned Parquet master dataset.
 
-IMPORTANT (Post 1.6 fix):
-- row_id MUST be treated as a durable join key and must not round-trip through float.
-- stable_row_id() produces unsigned 64-bit integers (0..2^64-1), which can exceed signed int64.
-- Therefore we always materialize row_id as a *string of digits* in emitted CSV chunks.
+Delta-safety (2026-02-07):
+- --require-nonempty-manifest : abort if manifest is missing/empty (prevents full re-run).
+- --max-changed-parts N       : abort if preflight detects >N changed parts.
+- --dry-run                   : print changed parts and exit before any Parquet reads/writes.
 
-Writes only NEW/CHANGED parts into a subfolder (default: ./new) using a small manifest.
-Optionally fans out NEOWISE-SE per-chunk runs just like the original script.
-
-Compared to the original, key additions are:
-- Manifest gating on Parquet part (mtime + size) -> skip unchanged parts
-- New-only chunk folder (out_dir/<write_subdir>/positions_chunk_*.csv)
-- Larger default chunk size (20000)
+Existing behaviour:
+- Detects changed Parquet parts based on {size, mtime_ns} against a JSON manifest.
+- Only NEW/CHANGED parts are exported to out_dir/<write_subdir>/positions_chunk_*.csv.
+- Optional: fan out NEOWISE-SE per-chunk runs (--run-neowise).
+- row_id is always materialized as a string of digits (durable).
 """
-
 import argparse
 import json
 import sys
 import hashlib
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
-
 import pandas as pd
 
 DEFAULT_MANIFEST = "./data/local-cats/tmp/positions_manifest.json"
 
-
 def find_parquet_parts(root: Path) -> List[Path]:
     return sorted(root.rglob("*.parquet"))
-
 
 def file_sig(p: Path) -> Dict:
     st = p.stat()
     return {"size": st.st_size, "mtime_ns": st.st_mtime_ns}
-
 
 def load_manifest(path: Path) -> Dict[str, Dict]:
     if path.exists():
@@ -46,70 +39,47 @@ def load_manifest(path: Path) -> Dict[str, Dict]:
             return {}
     return {}
 
-
 def save_manifest(path: Path, data: Dict[str, Dict]):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2))
     tmp.replace(path)
 
-
 def autodetect_columns(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], bool, Optional[str]]:
-    ra_cands = ["ALPHAWIN_J2000", "ALPHA_J2000", "X_WORLD", "alpha", "ra"]
-    de_cands = ["DELTAWIN_J2000", "DELTA_J2000", "Y_WORLD", "delta", "dec"]
+    ra_cands = ["ALPHAWIN_J2000","ALPHA_J2000","X_WORLD","alpha","ra"]
+    de_cands = ["DELTAWIN_J2000","DELTA_J2000","Y_WORLD","delta","dec"]
     ra_col = next((c for c in ra_cands if c in df.columns), None)
     de_col = next((c for c in de_cands if c in df.columns), None)
     has_row_id = "row_id" in df.columns
-    tile_col = next((c for c in ("tile_id", "tile", "tile_name") if c in df.columns), None)
+    tile_col = next((c for c in ("tile_id","tile","tile_name") if c in df.columns), None)
     return ra_col, de_col, has_row_id, tile_col
 
-
 def stable_row_id(tile_id: str, local_index: int) -> int:
-    """
-    Deterministic unsigned 64-bit-like ID derived from tile_id + local_index.
-    Note: this can exceed signed int64; treat as string downstream.
-    """
     h = hashlib.sha1(f"{tile_id}:{local_index}".encode("utf-8")).digest()
     return int.from_bytes(h[:8], byteorder="big", signed=False)
 
-
 def _to_row_id_str_series(s: pd.Series) -> pd.Series:
-    """
-    Normalize an existing row_id column to a string-of-digits Series.
-    This avoids float/scientific notation issues and preserves large unsigned values.
-    """
     def conv(x):
         if pd.isna(x):
             return pd.NA
-        # If already a string, keep as-is (strip whitespace)
         if isinstance(x, str):
             x2 = x.strip()
-            # If it looks like a float in scientific notation, do NOT attempt lossy conversion.
-            # Keep the literal string so downstream can detect/flag it.
             return x2
-        # If it's numeric, convert through Python int (handles big ints safely)
         try:
             return str(int(x))
         except Exception:
             return str(x)
-
     return s.apply(conv).astype("string")
-
 
 def load_positions_from_part(part_path: Path) -> pd.DataFrame:
     df = pd.read_parquet(part_path)
     ra_col, de_col, has_row_id, tile_col = autodetect_columns(df)
     if ra_col is None or de_col is None:
         raise RuntimeError(f"Could not find RA/Dec columns in {part_path}")
-
-    out = pd.DataFrame(
-        {
-            "ra": pd.to_numeric(df[ra_col], errors="coerce").astype("float64"),
-            "dec": pd.to_numeric(df[de_col], errors="coerce").astype("float64"),
-        }
-    )
-
-    # Build row_id as STRING digits
+    out = pd.DataFrame({
+        "ra":  pd.to_numeric(df[ra_col], errors="coerce").astype("float64"),
+        "dec": pd.to_numeric(df[de_col], errors="coerce").astype("float64"),
+    })
     if has_row_id:
         out["row_id"] = _to_row_id_str_series(df["row_id"])
     else:
@@ -122,12 +92,9 @@ def load_positions_from_part(part_path: Path) -> pd.DataFrame:
             else:
                 out["row_id"] = pd.Series([str(stable_row_id(tiles.iloc[i], i)) for i in local_idx], dtype="string")
         else:
-            # Fallback: not ideal, but still string-safe
             out["row_id"] = pd.Series([str(i) for i in local_idx], dtype="string")
-
-    out = out.dropna(subset=["ra", "dec"]).reset_index(drop=True)
-    return out[["row_id", "ra", "dec"]]
-
+    out = out.dropna(subset=["ra","dec"]).reset_index(drop=True)
+    return out[["row_id","ra","dec"]]
 
 def write_chunks(df_all: pd.DataFrame, out_dir: Path, chunk_size: int, subdir: str) -> List[Path]:
     target = out_dir / subdir
@@ -135,16 +102,13 @@ def write_chunks(df_all: pd.DataFrame, out_dir: Path, chunk_size: int, subdir: s
     chunks: List[Path] = []
     counter = 1
     for start in range(0, len(df_all), chunk_size):
-        chunk = df_all.iloc[start : start + chunk_size]
+        chunk = df_all.iloc[start: start + chunk_size].copy()
         fname = target / f"positions_chunk_{counter:05d}.csv"
-        # Ensure row_id stays a string in CSV
-        chunk = chunk.copy()
         chunk["row_id"] = chunk["row_id"].astype("string")
-        chunk[["row_id", "ra", "dec"]].to_csv(fname, index=False)
+        chunk[["row_id","ra","dec"]].to_csv(fname, index=False)
         chunks.append(fname)
         counter += 1
     return chunks
-
 
 def run_neowise_per_chunk(
     neowise_script: Path,
@@ -158,31 +122,21 @@ def run_neowise_per_chunk(
 ):
     import subprocess
     import sys as _sys
-
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = chunk_path.stem.replace("positions_chunk_", "neowise_se_matches_")
     out_csv = out_dir / f"{stem}.csv"
     cmd = [
-        _sys.executable,
-        str(neowise_script),
-        "--in-csv",
-        str(chunk_path),
-        "--out-csv",
-        str(out_csv),
-        "--radius-arcsec",
-        str(radius_arcsec),
-        "--mjd-cap",
-        str(mjd_cap),
-        "--snr",
-        str(snr),
-        "--chunk-size",
-        str(chunk_size),
-        "--sleep",
-        str(sleep),
+        _sys.executable, str(neowise_script),
+        "--in-csv",  str(chunk_path),
+        "--out-csv", str(out_csv),
+        "--radius-arcsec", str(radius_arcsec),
+        "--mjd-cap",       str(mjd_cap),
+        "--snr",           str(snr),
+        "--chunk-size",    str(chunk_size),
+        "--sleep",         str(sleep),
     ]
     subprocess.run(cmd, check=True)
     return out_csv
-
 
 def main():
     ap = argparse.ArgumentParser()
@@ -191,8 +145,8 @@ def main():
     ap.add_argument("--chunk-size", type=int, default=20000)
     ap.add_argument("--write-subdir", default="new")
     ap.add_argument("--manifest", default=DEFAULT_MANIFEST)
-    ap.add_argument("--full-rescan", action="store_true", help="Ignore manifest and write all chunks into write-subdir")
-
+    ap.add_argument("--full-rescan", action="store_true",
+                    help="Ignore manifest and treat all parts as changed (NOT recommended).")
     ap.add_argument("--run-neowise", action="store_true")
     ap.add_argument("--neowise-script", default="./scripts/xmatch_neowise_single_exposure.py")
     ap.add_argument("--neowise-out-dir", default="./data/local-cats/out/neowise_se")
@@ -200,6 +154,14 @@ def main():
     ap.add_argument("--mjd-cap", type=int, default=59198)
     ap.add_argument("--snr", type=float, default=5.0)
     ap.add_argument("--sleep", type=float, default=1.0)
+
+    # NEW guardrails
+    ap.add_argument("--require-nonempty-manifest", action="store_true",
+                    help="Abort if manifest is missing or empty.")
+    ap.add_argument("--max-changed-parts", type=int, default=0,
+                    help="Abort if preflight detects more than this number of changed parts (0=disabled).")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="Print changed parts and exit before any Parquet loads/writes.")
     args = ap.parse_args()
 
     root = Path(args.parquet_root)
@@ -207,24 +169,43 @@ def main():
     man_path = Path(args.manifest)
 
     manifest = {} if args.full_rescan else load_manifest(man_path)
+    if args.require_nonempty_manifest and (not manifest):
+        print("[ABORT] Manifest is missing/empty and --require-nonempty-manifest is set.")
+        raise SystemExit(2)
+
     parts = find_parquet_parts(root)
     if not parts:
         raise SystemExit(f"No parquet files found under {root}")
 
+    # preflight: compute changed parts (stat-only; constant RAM)
     changed_parts: List[Path] = []
     for p in parts:
         key = str(p.relative_to(root))
         sig = file_sig(p)
-        if key not in manifest or manifest[key].get("size") != sig["size"] or manifest[key].get("mtime_ns") != sig["mtime_ns"]:
+        if args.full_rescan or key not in manifest or \
+           manifest[key].get("size") != sig["size"] or \
+           manifest[key].get("mtime_ns") != sig["mtime_ns"]:
             changed_parts.append(p)
 
-    if args.full_rescan:
-        changed_parts = parts
+    print(f"[PREL. INFO] changed_parts={len(changed_parts)}")
+    for p in changed_parts[:50]:
+        print("  ", p.relative_to(root))
+    if len(changed_parts) > 50:
+        print("  ...")
+
+    if args.max_changed_parts > 0 and len(changed_parts) > args.max_changed_parts:
+        print(f"[ABORT] changed_parts={len(changed_parts)} exceeds --max-changed-parts={args.max_changed_parts}")
+        raise SystemExit(3)
+
+    if args.dry_run:
+        print("[DRY-RUN] Exiting before any Parquet reads/writes.")
+        return
 
     if not changed_parts:
         print("[INFO] No changes detected; nothing to write.")
         return
 
+    # load positions for changed parts only
     frames: List[pd.DataFrame] = []
     for p in changed_parts:
         try:
@@ -236,15 +217,13 @@ def main():
         raise SystemExit("No positions could be extracted from changed parts")
 
     df_all = pd.concat(frames, ignore_index=True)
-
-    # Drop duplicates by row_id string
     if "row_id" in df_all.columns:
         df_all = df_all.drop_duplicates(subset=["row_id"]).reset_index(drop=True)
 
     chunks = write_chunks(df_all, out_dir, args.chunk_size, args.write_subdir)
     print(f"[INFO] Wrote {len(chunks)} positions chunk(s) to {out_dir / args.write_subdir}")
 
-    # Update manifest entries only for changed parts
+    # Update manifest only for changed parts (delta)
     for p in changed_parts:
         key = str(p.relative_to(root))
         manifest[key] = file_sig(p)
@@ -267,7 +246,6 @@ def main():
             produced.append(out_csv)
             print(f"[INFO] TAP results -> {out_csv}")
         print(f"[INFO] Completed NEOWISE-SE runs for {len(produced)} chunk(s).")
-
 
 if __name__ == "__main__":
     main()
