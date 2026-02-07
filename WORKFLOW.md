@@ -241,7 +241,7 @@ python ./scripts/final_candidates_post16.py \
 ---
 
 ### Step 3: Summarise Runs
-- **Script:** `./scripts/summarize_runs.py --data-dir ./data`
+- **Script:** `./scripts/summarize_runs.py --data-dir ./data --run <folder> --irflags-parquet <ir-flags-parquet> --radius-arcsec 2.0 --tiles-root "./data/tiles_by_sky"` 
 - **Purpose:** Aggregates statistics across all tiles, producing Markdown and CSV summaries.
 - **Outputs:** `./data/run_summary.md`, `run_summary.csv`, `run_summary_tiles.csv`, `run_summary_tiles_counts.csv`
 
