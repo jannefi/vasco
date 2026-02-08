@@ -122,6 +122,7 @@ Ensure these tools are on your `PATH`:
 - **SExtractor** (`sex` or `sextractor`)
 - **PSFEx** (`psfex`)
 - **STILTS** (`stilts`) — required for CDS cross-matching and CSV filtering
+- **DuckDB** (`duckdb`) - required by some downstream scripts. https://duckdb.org/ 
 
 **Verify your setup:**
 ```bash
@@ -129,10 +130,11 @@ python -V
 python -c "import astropy, numpy, pandas; print('OK')"
 sex -v         # or: sextractor -v OR source-extractor -v
 psfex -v
+duckdb -version
 ```
 
 ## Docker usage
-Use the container image **`astro-tools:latest`** that bundles Python, SExtractor, PSFEx, STILTS, and system dependencies.
+Use the container image **`astro-tools:latest`** that bundles Python, SExtractor, PSFEx, STILTS, DuckDB lib/CLI and system dependencies.
 
 ### Build the image
 ```bash

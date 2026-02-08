@@ -1,3 +1,6 @@
+#
+# duckdb source
+FROM duckdb/duckdb:latest AS duckdb_source
 # Use debian:bookworm-slim (Debian 12) to easily access Python 3.11
 # This provides a more recent Python version (> 3.10) without complex PPA configurations.
 FROM debian:bookworm-slim
@@ -31,6 +34,12 @@ RUN wget -q -O $STILTS_HOME/stilts.jar "http://www.star.bris.ac.uk/~mbt/stilts/s
 # Create a simple wrapper script for easy execution of STILTS
 RUN echo "#!/bin/bash\njava -jar $STILTS_HOME/stilts.jar \"\$@\"" > $STILTS_HOME/stilts \
     && chmod +x $STILTS_HOME/stilts
+
+# install duckdb CLI
+COPY --from=duckdb_source /duckdb /usr/local/bin/duckdb
+
+# Ensure it's executable
+RUN chmod +x /usr/local/bin/duckdb
 
 # --- 4. Install Python Scientific Stack ---
 # Install the required Python packages using pip.
