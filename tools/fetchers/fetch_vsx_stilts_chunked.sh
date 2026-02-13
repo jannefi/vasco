@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 # VSX flags via TAPVizieR (VOT-only), preserving your January-tested flow:
 #   VOT -> CSV -> STILTS-built VOT -> tapquery -> CSV -> Parquet
-# Per-chunk outputs named by the input chunk (idempotent, atomic .tmp -> final).
+# Adds: logs, timeout, retries (no change to ADQL or tap semantics).
 # Usage:
 #   ./tools/fetchers/fetch_vsx_stilts_chunked.sh <positions.vot> <out_dir>
-# Example:
-#   ./tools/fetchers/fetch_vsx_stilts_chunked.sh \
-#       ./work/scos_chunks/chunk_0000001.vot ./data/local-cats/_master_optical_parquet_flags/vsx/parts
 set -euo pipefail
 
 POS=${1:?positions.vot required}
@@ -21,7 +18,11 @@ STAMP="$(date -u +%FT%TZ)"
 OUTCSV="$OUTDIR/flags_vsx__${CHUNK}.csv"
 PARQ_TMP="$OUTDIR/flags_vsx__${CHUNK}.parquet.tmp"
 PARQ="$OUTDIR/flags_vsx__${CHUNK}.parquet"
-LOG="$OUTDIR/flags_vsx__${CHUNK}.stilts.log"
+
+# Logging
+LOG_DIR="${OUTDIR}/logs"
+mkdir -p "${LOG_DIR}"
+LOG="${LOG_DIR}/vsx__${CHUNK}.log"
 
 # Idempotent re-run: skip if final parquet exists and is non-empty
 if [ -s "$PARQ" ]; then
@@ -30,16 +31,17 @@ if [ -s "$PARQ" ]; then
 fi
 
 # Scratch
-TMPDIR="$(mktemp -d -t vsx_XXXX)"
-trap 'rm -rf "$TMPDIR"' EXIT
+TMPDIR="$(mktemp -d -t vsx_XXXX)"; trap 'rm -rf "$TMPDIR"' EXIT
 CSV="$TMPDIR/upload.csv"
 VOT="$TMPDIR/upload.vot"
 
-# Your original, verified recode: VOT -> CSV -> STILTS-built VOT
-stilts tcopy in="$POS" ifmt=votable out="$CSV" ofmt=csv               2>>"$LOG"
-stilts tcopy in="$CSV" ifmt=csv     out="$VOT" ofmt=votable            2>>"$LOG"
+echo "[start] ${CHUNK} at ${STAMP}" | tee -a "$LOG"
 
-# --- ADQL: unchanged (uses u.NUMBER; 5.0 arcsec radius; ICRS) ---
+# Your original, verified recode: VOT -> CSV -> STILTS-built VOT
+stilts tcopy in="$POS" ifmt=votable out="$CSV" ofmt=csv            >>"$LOG" 2>&1
+stilts tcopy in="$CSV" ifmt=csv     out="$VOT" ofmt=votable         >>"$LOG" 2>&1
+
+# --- ADQL: unchanged ---
 ADQL="SELECT u.NUMBER, COUNT(*) AS nmatch
 FROM TAP_UPLOAD.t1 AS u
 JOIN \"B/vsx/vsx\" AS v
@@ -49,14 +51,39 @@ JOIN \"B/vsx/vsx\" AS v
      )
 GROUP BY u.NUMBER"
 
-# TAPVizieR (STILTS manages async/exec/cleanup internally)
-stilts tapquery \
-  tapurl=https://tapvizier.cds.unistra.fr/TAPVizieR/tap \
-  nupload=1 upload1="$VOT" upname1=t1 ufmt1=votable \
-  adql="$ADQL" \
-  out="$OUTCSV" ofmt=csv                                               2>>"$LOG"
+# TAPVizieR (unchanged), with timeout+retries (does not alter query semantics)
+TAPURL="${TAPURL:-https://tapvizier.cds.unistra.fr/TAPVizieR/tap}"
+TIMEOUT_SECS="${TIMEOUT_SECS:-900}"       # 15 min hard cap per chunk
+RETRIES="${RETRIES:-4}"
+BASE_BACKOFF="${BASE_BACKOFF:-3}"         # 3, 9, 27... seconds
 
-# CSV -> Parquet (flags), one row per NUMBER
+attempt=0
+set +e
+while :; do
+  attempt=$((attempt+1))
+  echo "[tap] attempt=${attempt} timeout=${TIMEOUT_SECS}s url=${TAPURL}" | tee -a "$LOG"
+  if timeout -s INT "${TIMEOUT_SECS}" \
+     stilts tapquery \
+       tapurl="${TAPURL}" \
+       nupload=1 upload1="$VOT" upname1=t1 ufmt1=votable \
+       adql="$ADQL" \
+       out="$OUTCSV" ofmt=csv                                   >>"$LOG" 2>&1; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [ $rc -eq 0 ]; then break; fi
+  if [ $attempt -ge $RETRIES ]; then
+    echo "[error] tapquery failed after ${RETRIES} attempts (rc=${rc})" | tee -a "$LOG"
+    exit 3
+  fi
+  sleep_for=$(( BASE_BACKOFF ** attempt ))
+  echo "[warn] retry in ${sleep_for}s (rc=${rc})" | tee -a "$LOG"
+  sleep "${sleep_for}"
+done
+set -e
+
+# CSV -> Parquet (flags), one row per NUMBER (unchanged)
 python - <<'PY' "$OUTCSV" "$PARQ_TMP" "$CHUNK" "$STAMP"
 import sys, pandas as pd, pyarrow as pa, pyarrow.parquet as pq
 csv, parq_tmp, chunk, stamp = sys.argv[1:5]
@@ -73,7 +100,6 @@ if not df.empty and 'NUMBER' in df.columns:
 else:
     flags = pd.DataFrame(columns=['NUMBER','is_known_variable_or_transient'])
 
-# Minimal provenance
 flags['source_chunk'] = chunk
 flags['queried_at_utc'] = stamp
 
@@ -83,4 +109,4 @@ PY
 
 # Atomic move into place
 mv -f "$PARQ_TMP" "$PARQ"
-echo "[DONE] chunk=${CHUNK} -> ${PARQ}"
+echo "[DONE] chunk=${CHUNK} -> ${PARQ}" | tee -a "$LOG"
