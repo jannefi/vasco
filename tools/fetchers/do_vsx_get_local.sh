@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Batch LOCAL VSX flags over VOT/CSV chunks (no network). Fast-resume & merge.
 # Usage:
-#   ./tools/fetchers/do_vsx_get_local.sh <chunks_dir> <out_root> [radius_arcsec] [vsx_fits]
+#   ./tools/fetchers/do_vsx_get_local.sh <chunks_dir> <out_root> [radius_arcsec] [vsx_fits] [id_col]
 set -euo pipefail
 
 CHUNKS_DIR="${1:?chunks_dir required}"
 OUT_ROOT="${2:?out_root required}"
 R_AS="${3:-5}"
-VSX_FITS="${4:-./data/local-cats/_ext/vsx/derived/vsx_master_slim.fits}"
-
+VSX_FITS="${4:-./data/local-cats/_external_catalogs/vsx/vsx_master_slim.fits}"
+ID_COL="${5:-${ID_COL:-NUMBER}}"
 THREADS="${THREADS:-1}"
-SCAN_GLOB="${SCAN_GLOB:-chunk_*.vot}"   # use 'chunk_*.csv' if needed
+SCAN_GLOB="${SCAN_GLOB:-chunk_*.vot}"      # switch to 'chunk_*.csv' if needed
 ONLY_MISSING="${ONLY_MISSING:-1}"
 PAUSE_SECS="${PAUSE_SECS:-0}"
 
@@ -18,17 +18,19 @@ PARTS="${OUT_ROOT}/parts"
 CANON="${OUT_ROOT}/canonical/flags_vsx_known_variables.parquet"
 AUDIT="${OUT_ROOT}/audit/flags_vsx_parts_all.parquet"
 LOG="${OUT_ROOT}/vsx_local_batch.log"
+
 mkdir -p "${PARTS}" "$(dirname "${CANON}")" "$(dirname "${AUDIT}")"
 touch "${LOG}"
 
-# Build list, skip-fast
+# Build queue (sorted, robust to empty globs)
+shopt -s nullglob
 mapfile -t FILES < <(printf "%s\n" "${CHUNKS_DIR}"/${SCAN_GLOB} | sort)
 QUEUE=()
 for f in "${FILES[@]}"; do
-  [ -e "$f" ] || continue
+  [[ -e "$f" ]] || continue
   base="$(basename "$f")"; base="${base%.*}"
   out="${PARTS}/flags_vsx__${base}.parquet"
-  if [ "${ONLY_MISSING}" = "1" ] && [ -s "$out" ]; then
+  if [[ "${ONLY_MISSING}" = "1" && -s "${out}" ]]; then
     echo "[skip-fast] ${base} already done: ${out}" | tee -a "$LOG"
     continue
   fi
@@ -38,25 +40,29 @@ done
 # Run
 pids=(); active=0; idx=0
 for f in "${QUEUE[@]}"; do
-  while [ "$active" -ge "$THREADS" ]; do wait -n || true; active=$((active-1)); done
+  while [[ "$active" -ge "$THREADS" ]]; do
+    wait -n || true; active=$((active-1))
+  done
   idx=$((idx+1)); echo "[batch] start #${idx}: $(basename "$f")" | tee -a "$LOG"
-  ./tools/fetchers/fetch_vsx_local_chunked.sh "$f" "${PARTS}" "${R_AS}" "${VSX_FITS}" &
+  ./tools/fetchers/fetch_vsx_local_chunked.sh "$f" "${PARTS}" "${R_AS}" "${VSX_FITS}" "${ID_COL}" &
   pids+=("$!"); active=$((active+1))
   sleep "${PAUSE_SECS}"
 done
 wait "${pids[@]}" 2>/dev/null || true
 
-# Merge to canonical/audit (DuckDB)
+# Merge (DuckDB)
 LOCK="${PARTS}/.merge.lock"; exec 9>"$LOCK"
 if flock -n 9; then
   echo "[merge] start $(date -u +%FT%TZ)" | tee -a "$LOG"
   duckdb -c "
     INSTALL parquet; LOAD parquet;
     CREATE OR REPLACE VIEW parts AS
-      SELECT * FROM read_parquet('${PARTS}/flags_vsx__*.parquet');
+    SELECT * FROM read_parquet('${PARTS}/flags_vsx__*.parquet');
     COPY (
       SELECT NUMBER, TRUE AS is_known_variable_or_transient
-      FROM parts WHERE NUMBER IS NOT NULL GROUP BY NUMBER
+      FROM parts
+      WHERE NUMBER IS NOT NULL
+      GROUP BY NUMBER
     ) TO '${CANON}.tmp' (FORMAT PARQUET);
     COPY (SELECT * FROM parts) TO '${AUDIT}.tmp' (FORMAT PARQUET);
   " | tee -a "$LOG"
