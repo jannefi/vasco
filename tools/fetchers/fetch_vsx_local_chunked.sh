@@ -65,7 +65,7 @@ stilts tskymatch2 \
   in2="${VSX_FITS}" ra2=RAdeg dec2=DEdeg \
   error="${R_AS}" \
   join=1and2 find=best \
-  out="${OUTCSV}" ofmt=csv >>"${LOG}" 2>&1
+  out="${OUTCSV}" ofmt=csv
 
 # CSV -> Parquet (boolean flag per NUMBER)
 python - <<'PY' "${OUTCSV}" "${PARQ_TMP}" "${CHUNK}" "${R_AS}" "${STAMP}"
