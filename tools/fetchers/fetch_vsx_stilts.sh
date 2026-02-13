@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 # ./scripts/fetch_vsx_stilts.sh <positions.vot> <flags_out_root>
 set -euo pipefail
@@ -46,4 +45,3 @@ else:
 pq.write_table(pa.Table.from_pandas(flag, preserve_index=False), outp)
 print('[OK] VSX flags ->', outp, 'rows=', len(flag))
 PY
-
