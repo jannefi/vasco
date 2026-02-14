@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-SkyBoT fetcher for one survivors chunk (verbose, production-safe).
+SkyBoT fetcher for one survivors chunk (verbose, production-safe) with optional per-row fallback.
 
 Inputs:
   - chunk CSV:  work/scos_chunks/chunk_XXXXX.csv (columns: number,row_id,ra,dec)
@@ -17,6 +17,7 @@ Local match policy (locked today):
   - strict:  5 arcsec   -> has_skybot_match = True
   - wide:   30 arcsec   -> wide_skybot_match = True (strict remains False)
 """
+
 import argparse, json, math, time
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -29,6 +30,8 @@ import requests
 
 SKYBOT_URL = "https://vo.imcce.fr/webservices/skybot/skybotconesearch_query.php"
 
+# ---------- CLI & helpers ----------
+
 def parse_args():
     p = argparse.ArgumentParser(description="Fetch SkyBoT flags for one survivors chunk.")
     p.add_argument("--chunk-csv", required=True)
@@ -39,6 +42,11 @@ def parse_args():
     p.add_argument("--field-radius-arcmin", type=float, default=9.0)   # ~8–10′
     p.add_argument("--match-arcsec",         type=float, default=5.0)  # strict
     p.add_argument("--fallback-wide-arcsec", type=float, default=30.0) # labeled fallback
+    # Fallback per-row (OFF by default)
+    p.add_argument("--fallback-per-row", type=str, default="false",
+                   help="true/false (default=false). If true, try per-row 5\" cones only for fields with 200/0.")
+    p.add_argument("--fallback-per-row-cap", type=int, default=250,
+                   help="Safety cap: maximum rows per chunk to probe with per-row cones.")
     # HTTP/runtime
     p.add_argument("--workers", type=int, default=1)                   # kept sequential for clearer logs
     p.add_argument("--connect-timeout", type=float, default=5.0)
@@ -58,6 +66,8 @@ def ensure_dirs(root: Path) -> Dict[str, Path]:
     audit  = root / "audit";  audit.mkdir(parents=True, exist_ok=True)
     ledger = root / "ledger"; ledger.mkdir(parents=True, exist_ok=True)
     return {"parts": parts, "audit": audit, "ledger": ledger}
+
+# ---------- IO & enrichment ----------
 
 def load_chunk(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
@@ -93,6 +103,8 @@ def enrich(df: pd.DataFrame, t2p_path: Path, pep_path: Path, verbose=False) -> p
     vprint(verbose, "[INFO] Enrichment OK (plate_id + epoch present for all rows).")
     return df
 
+# ---------- Fielding & HTTP ----------
+
 def grid_fields(df: pd.DataFrame, field_radius_arcmin: float) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Simple grid that yields ~100–200 rows/field for typical densities."""
     step_deg = field_radius_arcmin / 60.0
@@ -115,6 +127,7 @@ def grid_fields(df: pd.DataFrame, field_radius_arcmin: float) -> Tuple[pd.DataFr
 def call_skybot_field(ra_f: float, dec_f: float, epoch_iso: str, epoch_jd: float,
                       rs_arcmin: float, ct: float, rt: float, max_retries: int,
                       verbose=False) -> Tuple[int, List[Tuple[float,float]]]:
+    """Field call, SR in arcmin; returns HTTP status and list of (RAdeg,DECdeg)."""
     params = {
         "RA": f"{ra_f:.8f}",
         "DEC": f"{dec_f:.8f}",
@@ -128,14 +141,15 @@ def call_skybot_field(ra_f: float, dec_f: float, epoch_iso: str, epoch_jd: float
     tries = 0
     while True:
         try:
-            vprint(verbose, f"[HTTP] RA={params['RA']} DEC={params['DEC']} EP={params['EPOCH']} SR={params['SR']}")
+            if verbose:
+                print(f"[HTTP] FIELD RA={params['RA']} DEC={params['DEC']} EP={params['EPOCH']} SR={params['SR']}", flush=True)
             r = requests.get(SKYBOT_URL, params=params, timeout=(ct, rt))
             status = r.status_code
             if status == 200:
                 lines = [ln for ln in r.text.splitlines() if ln and not ln.startswith("#")]
                 objs: List[Tuple[float,float]] = []
                 if lines:
-                    # Heuristic: many outputs have RA(deg),DEC(deg) at positions 5,6 (0-based: 4,5)
+                    # Many outputs have RA(deg),DEC(deg) at positions 5,6
                     for ln in lines:
                         parts = [p for p in ln.replace("|"," ").split() if p]
                         if len(parts) >= 6:
@@ -150,15 +164,65 @@ def call_skybot_field(ra_f: float, dec_f: float, epoch_iso: str, epoch_jd: float
             else:
                 return status, []
         except requests.RequestException as e:
-            vprint(verbose, f"[WARN] HTTP exception: {e}")
+            if verbose: print(f"[WARN] HTTP exception (field): {e}", flush=True)
             if tries < max_retries:
                 time.sleep(2.0 * (tries + 1)); tries += 1; continue
             return -1, []
+
+def call_skybot_cone(ra: float, dec: float, epoch_iso: str, epoch_jd: float,
+                     rs_arcsec: float, ct: float, rt: float, max_retries: int,
+                     verbose=False) -> Tuple[int, List[Tuple[float,float]]]:
+    """Per-row cone, SR in arcsec; returns HTTP status and list of (RAdeg,DECdeg)."""
+    sr_deg = rs_arcsec / 3600.0
+    params = {
+        "RA": f"{ra:.8f}",
+        "DEC": f"{dec:.8f}",
+        "SR": f"{sr_deg:.8f}",
+        "EPOCH": f"{epoch_jd:.6f}" if pd.notna(epoch_jd) else epoch_iso,
+        "EQUINOX": "J2000",
+        "REFSYS": "EQJ2000",
+        "OUTPUT": "all",
+        "mime": "text",
+    }
+    tries = 0
+    while True:
+        try:
+            if verbose:
+                print(f"[HTTP] ROW RA={params['RA']} DEC={params['DEC']} EP={params['EPOCH']} SR={params['SR']}", flush=True)
+            r = requests.get(SKYBOT_URL, params=params, timeout=(ct, rt))
+            status = r.status_code
+            if status == 200:
+                lines = [ln for ln in r.text.splitlines() if ln and not ln.startswith("#")]
+                objs: List[Tuple[float,float]] = []
+                if lines:
+                    for ln in lines:
+                        parts = [p for p in ln.replace("|"," ").split() if p]
+                        if len(parts) >= 6:
+                            try:
+                                ra_deg = float(parts[4]); de_deg = float(parts[5])
+                                objs.append((ra_deg, de_deg))
+                            except Exception:
+                                continue
+                return status, objs
+            elif status in (429, 500, 502, 503, 504) and tries < max_retries:
+                time.sleep(2.0 * (tries + 1)); tries += 1; continue
+            else:
+                return status, []
+        except requests.RequestException as e:
+            if verbose: print(f"[WARN] HTTP exception (row): {e}", flush=True)
+            if tries < max_retries:
+                time.sleep(2.0 * (tries + 1)); tries += 1; continue
+            return -1, []
+
+# ---------- Main processing ----------
 
 def process_chunk(args):
     chunk_path = Path(args.chunk_csv)
     chunk_name = chunk_path.stem.replace(".csv","")
     out_dirs = ensure_dirs(Path(args.out_root))
+
+    # Parse booleans safely
+    fallback_per_row = str(args.fallback_per_row).strip().lower() in ("1","true","yes","y","on")
 
     t0 = time.time()
     print(f"[RUN] {chunk_name} …", flush=True)
@@ -193,13 +257,21 @@ def process_chunk(args):
         elif status == 429: rate_limits += 1
         else: http_errors += 1
 
-    # local match
+    # local match + optional per-row fallback for 200/0 fields
     strict = args.match_arcsec
     wide   = args.fallback_wide_arcsec
     out_rows = []
     aud_rows = []
     rows_matched_5 = 0
     rows_matched_30 = 0
+
+    # Track fallback stats
+    fb_attempted = 0
+    fb_matched   = 0
+    fb_http_err  = 0
+
+    # Identify fields eligible for per-row fallback: 200/0
+    empty_fields = {fid for fid,objs in fetched.items() if statuses.get(fid, -1) == 200 and len(objs) == 0}
 
     for fid, sub in df.groupby("field_id"):
         objs = fetched.get(fid, [])
@@ -210,47 +282,120 @@ def process_chunk(args):
             "http_status": int(statuses.get(fid, -1)),
             "returned_rows": int(len(objs)),
         })
-        if not objs:
+
+        # Fast path: field had objects; do local match against objs
+        if objs:
+            objs_arr = np.array(objs, dtype=float)  # (N,2)
             for _, r in sub.iterrows():
+                ra0 = float(r["ra"]); de0 = float(r["dec"])
+                dra  = np.deg2rad(objs_arr[:,0] - ra0)
+                ddec = np.deg2rad(objs_arr[:,1] - de0)
+                cd   = math.cos(math.radians((de0 + np.median(objs_arr[:,1])) / 2.0))
+                seps = np.hypot(dra * cd, ddec) * (180.0/np.pi) * 3600.0
+                best_sep = float(np.min(seps)) if seps.size else None
+                nmatch   = int(np.sum(seps <= wide)) if seps.size else 0
+
+                is_strict = (best_sep is not None) and (best_sep <= strict)
+                is_wide   = (best_sep is not None) and (not is_strict) and (best_sep <= wide)
+
+                if is_strict: rows_matched_5  += 1
+                if is_wide:   rows_matched_30 += 1
+
                 out_rows.append({
                     "row_id": r["row_id"],
                     "NUMBER": int(r["number"]),
                     "tile_id": r["tile_id"],
                     "plate_id": r["plate_id"],
-                    "has_skybot_match": False,
-                    "wide_skybot_match": False,
-                    "matched_count": 0,
-                    "best_sep_arcsec": None,
+                    "has_skybot_match": bool(is_strict),
+                    "wide_skybot_match": bool(is_wide),
+                    "matched_count": int(nmatch),
+                    "best_sep_arcsec": best_sep if seps.size else None,
                     "epoch_used": r["epoch_iso"] if pd.notna(r["epoch_iso"]) else r["epoch_jd"],
                     "source_chunk": chunk_name
                 })
+            continue  # next field
+
+        # Slow path: field empty; optionally probe per-row 5" cones
+        if (fid in empty_fields) and fallback_per_row and (fb_attempted < args.fallback_per_row_cap):
+            n_left = args.fallback_per_row_cap - fb_attempted
+            # Only probe up to the remaining budget in this field
+            sub_probe = sub.head(n_left)
+            print(f"[FALLBACK] per-row cones for field={fid} rows={len(sub_probe)} (cap left {n_left})", flush=True)
+
+            for _, r in sub_probe.iterrows():
+                fb_attempted += 1
+                ra0 = float(r["ra"]); de0 = float(r["dec"])
+                status, ob_list = call_skybot_cone(
+                    ra0, de0,
+                    str(r["epoch_iso"]) if pd.notna(r["epoch_iso"]) else None,
+                    float(r["epoch_jd"]) if pd.notna(r["epoch_jd"]) else float("nan"),
+                    strict,  # 5"
+                    args.connect_timeout, args.read_timeout, args.max_retries,
+                    verbose=args.verbose
+                )
+                if status not in (200, 429) and status != -1 and status != 0:
+                    fb_http_err += 1
+
+                # local evaluate with the small list (already within 5")
+                best_sep = None; nmatch = 0
+                if ob_list:
+                    objs_arr = np.array(ob_list, dtype=float)
+                    dra  = np.deg2rad(objs_arr[:,0] - ra0)
+                    ddec = np.deg2rad(objs_arr[:,1] - de0)
+                    cd   = math.cos(math.radians(de0))  # tiny cone, median not needed
+                    seps = np.hypot(dra * cd, ddec) * (180.0/np.pi) * 3600.0
+                    best_sep = float(np.min(seps)) if seps.size else None
+                    nmatch   = int(np.sum(seps <= strict)) if seps.size else 0
+
+                is_strict = (best_sep is not None) and (best_sep <= strict)
+                is_wide   = False  # per-row uses 5" cones only; no 30" here
+
+                if is_strict:
+                    rows_matched_5 += 1
+                    fb_matched     += 1
+
+                out_rows.append({
+                    "row_id": r["row_id"],
+                    "NUMBER": int(r["number"]),
+                    "tile_id": r["tile_id"],
+                    "plate_id": r["plate_id"],
+                    "has_skybot_match": bool(is_strict),
+                    "wide_skybot_match": bool(is_wide),
+                    "matched_count": int(nmatch),
+                    "best_sep_arcsec": best_sep,
+                    "epoch_used": r["epoch_iso"] if pd.notna(r["epoch_iso"]) else r["epoch_jd"],
+                    "source_chunk": chunk_name
+                })
+
+            # For any rows in the field we did not probe (cap exhausted), emit unmatched rows now
+            if len(sub) > len(sub_probe):
+                remainder = sub.iloc[len(sub_probe):]
+                for _, r in remainder.iterrows():
+                    out_rows.append({
+                        "row_id": r["row_id"],
+                        "NUMBER": int(r["number"]),
+                        "tile_id": r["tile_id"],
+                        "plate_id": r["plate_id"],
+                        "has_skybot_match": False,
+                        "wide_skybot_match": False,
+                        "matched_count": 0,
+                        "best_sep_arcsec": None,
+                        "epoch_used": r["epoch_iso"] if pd.notna(r["epoch_iso"]) else r["epoch_jd"],
+                        "source_chunk": chunk_name
+                    })
             continue
 
-        objs_arr = np.array(objs, dtype=float)  # (N,2)
+        # Default (no fallback or not eligible): mark as unmatched for all rows in this field
         for _, r in sub.iterrows():
-            ra0 = float(r["ra"]); de0 = float(r["dec"])
-            dra  = np.deg2rad(objs_arr[:,0] - ra0)
-            ddec = np.deg2rad(objs_arr[:,1] - de0)
-            cd   = math.cos(math.radians((de0 + np.median(objs_arr[:,1])) / 2.0))
-            seps = np.hypot(dra * cd, ddec) * (180.0/np.pi) * 3600.0
-            best_sep = float(np.min(seps)) if seps.size else None
-            nmatch   = int(np.sum(seps <= wide)) if seps.size else 0
-
-            is_strict = (best_sep is not None) and (best_sep <= strict)
-            is_wide   = (best_sep is not None) and (not is_strict) and (best_sep <= wide)
-
-            if is_strict: rows_matched_5  += 1
-            if is_wide:   rows_matched_30 += 1
-
             out_rows.append({
                 "row_id": r["row_id"],
                 "NUMBER": int(r["number"]),
                 "tile_id": r["tile_id"],
                 "plate_id": r["plate_id"],
-                "has_skybot_match": bool(is_strict),
-                "wide_skybot_match": bool(is_wide),
-                "matched_count": int(nmatch),
-                "best_sep_arcsec": best_sep if best_sep is not None else None,
+                "has_skybot_match": False,
+                "wide_skybot_match": False,
+                "matched_count": 0,
+                "best_sep_arcsec": None,
                 "epoch_used": r["epoch_iso"] if pd.notna(r["epoch_iso"]) else r["epoch_jd"],
                 "source_chunk": chunk_name
             })
@@ -266,6 +411,7 @@ def process_chunk(args):
     pq.write_table(pa.Table.from_pandas(audit_df, preserve_index=False), audit_path, compression="zstd")
 
     # write ledger
+    elapsed = round(time.time() - t0, 3)
     ledger = {
         "chunk": chunk_name,
         "ts_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -276,7 +422,12 @@ def process_chunk(args):
         "rate_limits": int(rate_limits),
         "rows_matched_5as": int(rows_matched_5),
         "rows_matched_30as": int(rows_matched_30),
-        "elapsed_s": round(time.time() - t0, 3),
+        "fallback_per_row": bool(fallback_per_row),
+        "fallback_per_row_cap": int(args.fallback_per_row_cap),
+        "fallback_rows_attempted": int(fb_attempted),
+        "fallback_rows_matched": int(fb_matched),
+        "fallback_http_errors": int(fb_http_err),
+        "elapsed_s": elapsed,
         "params": {
             "field_radius_arcmin": args.field_radius_arcmin,
             "local_match_arcsec": args.match_arcsec,
@@ -291,7 +442,9 @@ def process_chunk(args):
         json.dump(ledger, f, indent=2)
 
     print(f"[DONE] {chunk_name} parts={parts_path} audit={audit_path} ledger={ledger_path} "
-          f"matched_5as={rows_matched_5} matched_30as={rows_matched_30}", flush=True)
+          f"matched_5as={rows_matched_5} matched_30as={rows_matched_30} fb_rows={fb_attempted}/{fb_matched}", flush=True)
+
+# ---------- Entrypoint ----------
 
 if __name__ == "__main__":
     args = parse_args()
