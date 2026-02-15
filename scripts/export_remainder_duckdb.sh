@@ -105,20 +105,25 @@ SELECT
   ) AS remainder_with_skybot
 FROM mu;
 SQL
-# ---------- Parity (guarded) ----------
+# --- STILTS positional parity at 5 arcsec, matched-only with separation ---
+# Assumes your existing env from export_remainder_duckdb.sh
+#   MN_CSV points to: ./data/vasco-cats/vanish_possi_1765561258.csv
+#   OUT_ROOT has survivors_R_like_{inclusive,core_only}.provisional.csv
+
 if (( RUN_STILTS == 1 )); then
   if command -v stilts >/dev/null 2>&1; then
     for view in inclusive core_only; do
       csv="$OUT_ROOT/survivors_R_like_${view}.provisional.csv"
-      out="$OUT_PARITY_DIR/matched_to_MNRAS_within5_${view}.csv"
+      out_best="$OUT_PARITY_DIR/matched_to_MNRAS_within5_${view}_BEST.csv"   # matched pairs only
       if [ -s "$csv" ] && [ "$(wc -l < "$csv")" -gt 1 ]; then
-        stilts tmatch2 \
-          in1="$csv"  \
-          in2="$MN_CSV" \
-          matcher=sky params=5 join=all1 \
-          values1='RA Dec' values2='\#RA DEC' \
-          out="$out" ofmt=csv || true
-        echo "[OK] Parity for ${view} -> $out"
+        # tskymatch2: use RA/Dec from your R_like CSV, and \#RA/DEC from the MNRAS list
+        stilts tskymatch2 \
+          in1="$csv"  ifmt1=csv  ra1=RA  dec1=Dec \
+          in2="$MN_CSV" ifmt2=csv ra2=\#RA dec2=DEC \
+          error=5 find=best join=1and2 \
+          out="$out_best" ofmt=csv
+
+        echo "[OK] BEST-only parity for ${view} -> $out_best"
       else
         echo "[WARN] $csv empty or header-only; skipping STILTS for ${view}"
       fi
