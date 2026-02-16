@@ -1,134 +1,206 @@
 #!/usr/bin/env bash
 # export_remainder_duckdb.sh
-# Builds Inclusive and Core-only R_like remainders from masked-union parquet.
-# Writes both Parquet + CSV and (optionally) runs STILTS parity guardedly.
-
+# Produce R-like "remainder" exports (Inclusive and Core-only) from the masked-union using DuckDB only.
+# Requirements:
+#   - DuckDB CLI available as `duckdb`
+#   - Masked union parquet directory exists (Hive partitioned is fine)
+#   - (Optional) Plate-edge report CSV for Core-only selection
+#
+# Defaults follow the Post 1.6 runbook:
+#   * SkyBoT-aware remainder predicate
+#   * PRAGMA threads/memory/spill enabled
+#   * Inclusive always, Core-only when edge report CSV is present
+#
+# Usage examples:
+#   ./scripts/export_remainder_duckdb.sh
+#   ./scripts/export_remainder_duckdb.sh --masked ./work/survivors_masked_union --out-dir ./out
+#   DUCKDB_MEM=12GB DUCKDB_THREADS=10 DUCKDB_TEMP=/mnt/c/wsltmp/vasco_duckdb_tmp ./scripts/export_remainder_duckdb.sh
+#
+# Exit on error, unset vars, and pipeline failures
 set -euo pipefail
 
-# ---------- CONFIG (override via env) ----------
-MU_PARQ="${MU_PARQ:-./work/survivors_masked_union/part-00000.parquet}"
+# -------------------------
+# Defaults (override via flags or env)
+# -------------------------
+MASKED_DIR="${MASKED_DIR:-./work/survivors_masked_union}"
+EDGE_REPORT_CSV="${EDGE_REPORT_CSV:-./data/metadata/tile_plate_edge_report.csv}"
+OUT_DIR="${OUT_DIR:-./data/vasco-candidates/post16}"
+DUCKDB_BIN="${DUCKDB_BIN:-duckdb}"
 
-EDGE_CSV="${EDGE_CSV:-./data/metadata/tile_plate_edge_report.csv}"
+# Resource knobs (can be "auto" on some builds; use explicit numbers if your build dislikes "auto")
+DUCKDB_THREADS="${DUCKDB_THREADS:-10}"
+DUCKDB_MEM="${DUCKDB_MEM:-14GB}"
+DUCKDB_TEMP="${DUCKDB_TEMP:-${OUT_DIR}/_duckdb_tmp}"
 
-OUT_ROOT="${OUT_ROOT:-./data/vasco-candidates/post16}"
-OUT_INC_PARQ="${OUT_INC_PARQ:-$OUT_ROOT/survivors_R_like_inclusive.provisional.parquet}"
-OUT_INC_CSV="${OUT_INC_CSV:-$OUT_ROOT/survivors_R_like_inclusive.provisional.csv}"
-OUT_CORE_PARQ="${OUT_CORE_PARQ:-$OUT_ROOT/survivors_R_like_core_only.provisional.parquet}"
-OUT_CORE_CSV="${OUT_CORE_CSV:-$OUT_ROOT/survivors_R_like_core_only.provisional.csv}"
+# Output basename (timestamp for uniqueness)
+STAMP="$(date +%Y%m%d_%H%M%S)"
+BASE_INCL="${OUT_DIR}/survivors_remainder_inclusive_${STAMP}"
+BASE_CORE="${OUT_DIR}/survivors_remainder_core_only_${STAMP}"
 
-RUN_STILTS="${RUN_STILTS:-0}"
-# 5399 list
-MN_CSV="${MN_CSV:-./data/vasco-cats/vanish_possi_1765561258.csv}"
-OUT_PARITY_DIR="${OUT_PARITY_DIR:-./reports}"
+# -------------------------
+# CLI parsing
+# -------------------------
+print_help() {
+  cat <<'EOF'
+export_remainder_duckdb.sh
 
-# DuckDB pragmas for WSL
-THREADS="${THREADS:-4}"
-MEM_GB="${MEM_GB:-12GB}"
-TMPDIR="${TMPDIR:-/mnt/c/wsltmp/}"
+Flags:
+  --masked <dir>          Path to masked-union parquet directory (default: ./work/survivors_masked_union)
+  --edge-report <csv>     Path to plate-edge CSV (default: ./data/metadata/tile_plate_edge_report.csv)
+  --out-dir <dir>         Output directory (default: ./data/vasco-candidates/post16)
+  --duckdb <bin>          duckdb binary (default: duckdb)
+  --threads <N>           DuckDB PRAGMA threads (default: 10)
+  --mem <VAL>             DuckDB PRAGMA memory_limit (default: 14GB)
+  --temp-dir <dir>        DuckDB PRAGMA temp_directory (default: <out-dir>/_duckdb_tmp)
+  --help                  This help
+Env overrides:
+  MASKED_DIR, EDGE_REPORT_CSV, OUT_DIR, DUCKDB_BIN, DUCKDB_THREADS, DUCKDB_MEM, DUCKDB_TEMP
+EOF
+}
 
-mkdir -p "$OUT_ROOT" "$OUT_PARITY_DIR"
+while (( "$#" )); do
+  case "$1" in
+    --masked) MASKED_DIR="$2"; shift 2;;
+    --edge-report) EDGE_REPORT_CSV="$2"; shift 2;;
+    --out-dir) OUT_DIR="$2"; shift 2;;
+    --duckdb) DUCKDB_BIN="$2"; shift 2;;
+    --threads) DUCKDB_THREADS="$2"; shift 2;;
+    --mem) DUCKDB_MEM="$2"; shift 2;;
+    --temp-dir) DUCKDB_TEMP="$2"; shift 2;;
+    --help|-h) print_help; exit 0;;
+    *) echo "Unknown arg: $1" >&2; print_help; exit 2;;
+  esac
+done
 
-command -v duckdb >/dev/null 2>&1 || { echo "[ERR] duckdb not in PATH"; exit 2; }
+# Refresh derived paths after possible overrides
+mkdir -p "${OUT_DIR}"
+DUCKDB_TEMP="${DUCKDB_TEMP:-${OUT_DIR}/_duckdb_tmp}"
+mkdir -p "${DUCKDB_TEMP}"
 
-# ---------- Build Inclusive + Core-only ----------
-duckdb -batch <<SQL
-PRAGMA threads=${THREADS};
-SET memory_limit='${MEM_GB}';
-SET temp_directory='${TMPDIR}';
-SET preserve_insertion_order=false;
-INSTALL parquet; LOAD parquet;
+BASE_INCL="${OUT_DIR}/survivors_remainder_inclusive_${STAMP}"
+BASE_CORE="${OUT_DIR}/survivors_remainder_core_only_${STAMP}"
 
--- Masked union with flags + coords
-CREATE OR REPLACE VIEW mu AS
-  SELECT * FROM read_parquet('${MU_PARQ}');
+# -------------------------
+# Validation
+# -------------------------
+if [[ ! -d "${MASKED_DIR}" ]]; then
+  echo "[ERR] Masked-union directory not found: ${MASKED_DIR}" >&2
+  exit 1
+fi
 
--- Inclusive remainder: pass every gate; SkyBoT strict is optional -> treat missing as pass
-CREATE OR REPLACE VIEW r_inclusive AS
-SELECT
-  row_id, NUMBER, RA, Dec, tile_id, plate_id, date_obs_iso
-FROM mu
-WHERE NOT has_vosa_like_match
-  AND NOT is_supercosmos_artifact
-  AND NOT ptf_match_ngood
-  AND NOT is_known_variable_or_transient
-  AND COALESCE(NOT skybot_strict, TRUE);
+if ! command -v "${DUCKDB_BIN}" >/dev/null 2>&1; then
+  echo "[ERR] duckdb binary not found: ${DUCKDB_BIN}" >&2
+  exit 1
+fi
 
--- Edge classification (annotation-only, used for Core-only)
-CREATE OR REPLACE VIEW edge AS
-SELECT tile_id, plate_id, class_px, class_arcsec
-FROM read_csv_auto('${EDGE_CSV}');
+EDGE_CSV_PRESENT=0
+if [[ -f "${EDGE_REPORT_CSV}" ]]; then
+  EDGE_CSV_PRESENT=1
+else
+  echo "[WARN] Edge report CSV not found (${EDGE_REPORT_CSV}); Core-only export will be skipped."
+fi
 
--- Core-only: keep rows where (px == 'core' OR arcsec == 'core') (tolerant default)
-CREATE OR REPLACE VIEW r_core_only AS
-SELECT r.*
-FROM r_inclusive r
-LEFT JOIN edge e USING (tile_id, plate_id)
-WHERE COALESCE(e.class_px, 'core')='core' OR COALESCE(e.class_arcsec, 'core')='core';
+echo "[INFO] Masked-union: ${MASKED_DIR}"
+echo "[INFO] Out dir     : ${OUT_DIR}"
+echo "[INFO] DuckDB temp : ${DUCKDB_TEMP}"
+echo "[INFO] Threads/Mem : ${DUCKDB_THREADS} / ${DUCKDB_MEM}"
 
--- Write outputs
-COPY (SELECT * FROM r_inclusive) TO '${OUT_INC_PARQ}' (FORMAT PARQUET);
-COPY (SELECT * FROM r_inclusive) TO '${OUT_INC_CSV}'  (HEADER, DELIMITER ',');
-COPY (SELECT * FROM r_core_only) TO '${OUT_CORE_PARQ}' (FORMAT PARQUET);
-COPY (SELECT * FROM r_core_only) TO '${OUT_CORE_CSV}'  (HEADER, DELIMITER ',');
+# -------------------------
+# SQL blocks
+# -------------------------
 
--- Final counts
-SELECT
-  (SELECT COUNT(*) FROM r_inclusive) AS inclusive_rows,
-  (SELECT COUNT(*) FROM r_core_only) AS core_only_rows;
-SQL
+# Canonical remainder predicate (SkyBoT-aware)
+# - Booleans guarded with COALESCE(..., FALSE)
+# - For ptf_match_ngood treat missing as 0
+read -r -d '' SQL_HEADER <<EOSQL
+PRAGMA threads=${DUCKDB_THREADS};
+PRAGMA memory_limit='${DUCKDB_MEM}';
+PRAGMA temp_directory='${DUCKDB_TEMP}';
 
-echo "[OK] Remainders written:"
-echo "     Inclusive : $OUT_INC_PARQ  |  $OUT_INC_CSV"
-echo "     Core-only : $OUT_CORE_PARQ |  $OUT_CORE_CSV"
+-- Masked union view (parquet_scan handles Hive partitions)
+CREATE OR REPLACE VIEW masked AS
+  SELECT * FROM parquet_scan('${MASKED_DIR}');
 
-duckdb -batch <<'SQL'
-PRAGMA threads=4;
-SET memory_limit='12GB';
-SET temp_directory='/mnt/c/wsltmp/';
-INSTALL parquet; LOAD parquet;
+-- Helper: remainder predicate
+CREATE OR REPLACE VIEW remainder_inclusive AS
+SELECT *
+FROM masked
+WHERE
+  COALESCE(NOT has_vosa_like_match, TRUE)             -- drop if it *has* a VOSA-like match
+  AND COALESCE(NOT is_supercosmos_artifact, TRUE)     -- drop SuperCOSMOS artifacts
+  AND COALESCE(ptf_match_ngood, 0)=0                  -- drop if PTF says "good" match(s)
+  AND COALESCE(NOT is_known_variable_or_transient, TRUE) -- drop known variables/transients
+  AND COALESCE(NOT skybot_strict, TRUE);              -- drop strict SkyBoT matches (keep when absent)
+EOSQL
 
-CREATE OR REPLACE VIEW mu AS SELECT * FROM read_parquet('./work/survivors_masked_union/part-00000.parquet');
-SELECT
-  COUNT(*) AS masked_rows,
-  COUNT(*) FILTER (
-    WHERE NOT has_vosa_like_match
-      AND NOT is_supercosmos_artifact
-      AND NOT ptf_match_ngood
-      AND NOT is_known_variable_or_transient
-  ) AS remainder_wo_skybot,
-  COUNT(*) FILTER (
-    WHERE NOT has_vosa_like_match
-      AND NOT is_supercosmos_artifact
-      AND NOT ptf_match_ngood
-      AND NOT is_known_variable_or_transient
-      AND COALESCE(NOT skybot_strict, TRUE)
-  ) AS remainder_with_skybot
-FROM mu;
-SQL
-# --- STILTS positional parity at 5 arcsec, matched-only with separation ---
-# Assumes your existing env from export_remainder_duckdb.sh
-#   MN_CSV points to: ./data/vasco-cats/vanish_possi_1765561258.csv
-#   OUT_ROOT has survivors_R_like_{inclusive,core_only}.provisional.csv
+# Date-epoch passthrough note:
+# We keep all columns from masked; if `date_obs_iso` exists there, it will be present in outputs.
 
-if (( RUN_STILTS == 1 )); then
-  if command -v stilts >/dev/null 2>&1; then
-    for view in inclusive core_only; do
-      csv="$OUT_ROOT/survivors_R_like_${view}.provisional.csv"
-      out_best="$OUT_PARITY_DIR/matched_to_MNRAS_within5_${view}_BEST.csv"   # matched pairs only
-      if [ -s "$csv" ] && [ "$(wc -l < "$csv")" -gt 1 ]; then
-        # tskymatch2: use RA/Dec from your R_like CSV, and \#RA/DEC from the MNRAS list
-        stilts tskymatch2 \
-          in1="$csv"  ifmt1=csv  ra1=RA  dec1=Dec \
-          in2="$MN_CSV" ifmt2=csv ra2=\#RA dec2=DEC \
-          error=5 find=best join=1and2 \
-          out="$out_best" ofmt=csv
+# -------------------------
+# Inclusive export
+# -------------------------
+echo "[STEP] Writing Inclusive remainder → Parquet + CSV"
 
-        echo "[OK] BEST-only parity for ${view} -> $out_best"
-      else
-        echo "[WARN] $csv empty or header-only; skipping STILTS for ${view}"
-      fi
-    done
-  else
-    echo "[WARN] STILTS not in PATH; skipping parity."
-  fi
+"${DUCKDB_BIN}" -c "
+${SQL_HEADER}
+COPY (SELECT * FROM remainder_inclusive) TO '${BASE_INCL}.parquet' (FORMAT PARQUET);
+COPY (SELECT * FROM remainder_inclusive) TO '${BASE_INCL}.csv'     (HEADER, DELIMITER ',');
+-- Quick counts
+CREATE OR REPLACE TABLE __cnt_incl AS SELECT COUNT(*) AS n FROM remainder_inclusive;
+COPY (SELECT 'inclusive' AS kind, n FROM __cnt_incl) TO '${BASE_INCL}.counts.csv' (HEADER, DELIMITER ',');
+" >/dev/null
+
+echo "[OK] Inclusive Parquet : ${BASE_INCL}.parquet"
+echo "[OK] Inclusive CSV     : ${BASE_INCL}.csv"
+
+# -------------------------
+# Core-only export (if edge CSV is present)
+# -------------------------
+if [[ "${EDGE_CSV_PRESENT}" -eq 1 ]]; then
+  echo "[STEP] Writing Core-only remainder (edge-class core) → Parquet + CSV"
+
+  "${DUCKDB_BIN}" -c "
+  ${SQL_HEADER}
+
+  -- Edge report CSV (expected columns: tile_id, number, class_px, class_arcsec)
+  CREATE OR REPLACE TABLE edge_report AS
+    SELECT
+      tile_id,
+      number,
+      class_px,
+      class_arcsec,
+      (lower(coalesce(class_px,''))='core' OR lower(coalesce(class_arcsec,''))='core') AS is_core
+    FROM read_csv_auto('${EDGE_REPORT_CSV}', HEADER=TRUE);
+
+  -- Core-only subset: join on (tile_id, NUMBER == number)
+  CREATE OR REPLACE VIEW remainder_core AS
+    SELECT r.*
+    FROM remainder_inclusive r
+    JOIN edge_report e
+      ON r.tile_id = e.tile_id
+     AND r.NUMBER = e.number
+    WHERE e.is_core;
+
+  COPY (SELECT * FROM remainder_core) TO '${BASE_CORE}.parquet' (FORMAT PARQUET);
+  COPY (SELECT * FROM remainder_core) TO '${BASE_CORE}.csv'     (HEADER, DELIMITER ',');
+
+  -- Quick counts
+  CREATE OR REPLACE TABLE __cnt_core AS SELECT COUNT(*) AS n FROM remainder_core;
+  COPY (SELECT 'core_only' AS kind, n FROM __cnt_core) TO '${BASE_CORE}.counts.csv' (HEADER, DELIMITER ',');
+  " >/dev/null
+
+  echo "[OK] Core-only Parquet: ${BASE_CORE}.parquet"
+  echo "[OK] Core-only CSV    : ${BASE_CORE}.csv"
+else
+  echo "[SKIP] Core-only export skipped (edge report CSV missing)."
+fi
+
+# -------------------------
+# Summary
+# -------------------------
+echo
+echo "[DONE] Remainder export finished."
+echo "       Inclusive → ${BASE_INCL}.parquet  |  ${BASE_INCL}.csv"
+if [[ "${EDGE_CSV_PRESENT}" -eq 1 ]]; then
+  echo "       Core-only → ${BASE_CORE}.parquet  |  ${BASE_CORE}.csv"
 fi
