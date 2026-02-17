@@ -88,18 +88,52 @@ def _is_domain_error(exc: Exception) -> bool:
 
 
 def _parse_hits_row_id(out_csv: Path) -> set[str]:
+    """
+    Return row_id values that truly have a counterpart.
+
+    IMPORTANT: some xmatch services return one output row per INPUT row, with
+    match fields null when no counterpart exists. We must not treat "row exists"
+    as "matched".
+    """
     try:
         m = pd.read_csv(out_csv)
+        if m.empty:
+            return set()
+
+        # Normalize row_id column name
         if "row_id" not in m.columns:
-            # common fallbacks from upload services
             rid_col = next(
-                (c for c in m.columns if c.lower().replace("_", "") in ("rowid", "rowid1", "rowid2", "row_id1", "row_id2")),
+                (c for c in m.columns
+                 if c.lower().replace("_", "") in ("rowid", "rowid1", "rowid2", "row_id1", "row_id2")),
                 None
             )
             if rid_col:
                 m = m.rename(columns={rid_col: "row_id"})
-        hits = set(m["row_id"].astype(str)) if "row_id" in m.columns else set()
+
+        if "row_id" not in m.columns:
+            return set()
+
+        # Prefer a distance/sep column if present
+        dist_col = next((c for c in m.columns if c.lower() in ("angdist", "angdistarcsec", "dist", "distance", "sep", "separation")), None)
+        if dist_col is not None:
+            # Hit if distance is a finite number (non-null)
+            dist = pd.to_numeric(m[dist_col], errors="coerce")
+            hits = set(m.loc[dist.notna(), "row_id"].astype(str))
+            return hits
+
+        # Fallback: treat as hit if any non-input column is non-null.
+        # Typical input columns we uploaded:
+        input_cols = {"ra", "dec", "row_id"}
+        other_cols = [c for c in m.columns if c.lower() not in input_cols]
+
+        # If there are no other columns, we can't decide; be conservative (no hits)
+        if not other_cols:
+            return set()
+
+        mask = m[other_cols].notna().any(axis=1)
+        hits = set(m.loc[mask, "row_id"].astype(str))
         return hits
+
     except Exception:
         return set()
 
