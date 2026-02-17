@@ -6,8 +6,9 @@ import argparse, json
 from pathlib import Path
 import pandas as pd
 
-COMMON_RA = ['RA','ra','RA_corr','ALPHAWIN_J2000','ra_deg','alpha_j2000']
-COMMON_DEC = ['Dec','DEC','dec','Dec_corr','DEC_corr','DELTAWIN_J2000','dec_deg','delta_j2000']
+
+COMMON_RA  = ['RA_row','RA','ra','RA_corr','ALPHAWIN_J2000','ra_deg','alpha_j2000']
+COMMON_DEC = ['Dec_row','Dec','DEC','dec','Dec_corr','DEC_corr','DELTAWIN_J2000','dec_deg','delta_j2000']
 
 def pick_col(df, candidates):
     for c in candidates:
