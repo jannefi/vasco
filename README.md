@@ -1,11 +1,18 @@
 
-# VASCO: Reproducing the Image Processing Pipeline from MNRAS 515(1):1380
+# VASCO — plate-aware POSS‑I pipeline (research / evolving)
 
-**This repository re‑implements the core data‑processing workflow described in “Discovering vanishing objects in POSS I red images using the Virtual Observatory” (Solano et al., MNRAS 2022).**
+## Project status / scope (Feb 2026)
 
-VASCO enables reproducible research on astronomical objects that have vanished from the sky, using digitised photographic plates and modern catalogues. The pipeline is designed for both astronomers and programmers interested in large-scale sky surveys and time-domain astronomy.
+This repository is **no longer maintained with the goal of reproducing the results or dataset(s) reported in MNRAS 515(1):1380 (2022)**.
 
-> **Article link:** https://academic.oup.com/mnras/article/515/1/1380/6607509
+**Current goal:** reproduce the *intent* of that class of workflow — a **reproducible, plate-aware POSS‑I processing pipeline** — while improving provenance, robustness, and controls.  
+As a result, `main` is a moving research branch and may include breaking changes.
+
+If you are here for “MNRAS 2022 parity”: please use a tagged legacy snapshot if/when provided.
+
+Public context:
+- Watters et al. (2026) arXiv:2601.21946
+- Villarroel et al. (2026) response arXiv:2602.15171
 
 ---
 
