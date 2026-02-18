@@ -8,7 +8,7 @@ This repository is **no longer maintained with the goal of reproducing the resul
 **Current goal:** reproduce the *intent* of that class of workflow — a **reproducible, plate-aware POSS‑I processing pipeline** — while improving provenance, robustness, and controls.  
 As a result, `main` is a moving research branch and may include breaking changes.
 
-If you are here for “MNRAS 2022 parity”: please use a tagged legacy snapshot if/when provided.
+If you are here for “MNRAS 2022 parity”: please use a tagged [legacy snapshot](https://github.com/jannefi/vasco/releases/tag/v.0.9.5-legacy-mnras-repro)
 
 Public context:
 - Watters et al. (2026) arXiv:2601.21946
