@@ -14,6 +14,8 @@ Public context:
 - Watters et al. (2026) arXiv:2601.21946
 - Villarroel et al. (2026) response arXiv:2602.15171
 
+See the project [wiki](https://github.com/jannefi/vasco/wiki)
+
 ---
 
 ## Table of Contents
