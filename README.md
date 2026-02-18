@@ -29,7 +29,6 @@ See the project [wiki](https://github.com/jannefi/vasco/wiki)
 - [Detailed Usage](#detailed-usage)
 - [Docker Usage](#docker-usage)
 - [Final Steps & Advanced Commands](#final-steps--advanced-commands)
-- [Hybrid IR-aware finalization (MNRAS counts immediately)](#hybrid-ir-aware-finalization-recommended)
 - [Recent Improvements](#recent-improvements)
 - [Troubleshooting](#troubleshooting)
 - [Audit Findings & Technical Notes](#audit-findings--technical-notes)
@@ -56,10 +55,6 @@ VASCO aims to reproduce and extend the methodology of a recent astronomical stud
 ---
 
 ## Key Figures
-
-![Key Figures](./images/readme-key-figures-light.svg)
-
-*The above graphic summarises the current status of my pipeline.*
 
 ![Tile Coverage](./images/tiles_coverage_mollweide.png)
 
@@ -123,7 +118,7 @@ If a catalogue of unique sources (with all cross-tile duplicates removed) is req
 
 ## Installation & Prerequisites
 
-### Local (non-Docker) Runs
+### Local Runs
 
 Ensure these tools are on your `PATH`:
 
@@ -143,26 +138,10 @@ duckdb -version
 ```
 
 ## Docker usage
-Use the container image **`astro-tools:latest`** that bundles Python, SExtractor, PSFEx, STILTS, DuckDB lib/CLI and system dependencies.
 
-### Build the image
-```bash
-docker build -t astro-tools:latest .
-```
+Docker usage is no longer supported. Software may or may not work in a Docker image provided.
 
-### Run an interactive shell, then execute commands
-> **Important:** export the CDS variables **inside** the container shell before running pipeline commands.
 
-```bash
-docker run -it --rm   -v "$PWD:/workspace"   -w /workspace   astro-tools:latest bash
-
-# Inside the container:
-export VASCO_CDS_GAIA_TABLE="I/350/gaiaedr3"
-export VASCO_CDS_PS1_TABLE="II/389/ps1_dr2"
-
-# Example — sweep steps 4, 5, and 6 over mounted data
-python run-random.py steps   --steps step4-xmatch,step5-filter-within5,step6-summarize   --workdir-root data/tiles   --xmatch-backend cds   --xmatch-radius 5.0
-```
 ## Detailed Usage
 
 Please read [the workflow documentation](WORKFLOW.md)
@@ -392,78 +371,8 @@ python scripts/compare_vasco_vs_optical.py --vasco data/vasco-cats/vanish_neowis
 If everything went OK, you should find vasco_matched_to_optical.csv and vasco_still_ir_only.csv in the data folder. 
 
 ---
-## Audit findings & Technical Notes
-<details>
-<summary>Update 18-Dec-2025</summary>
-
-## Software update based on internal audit
-We performed an internal audit to sanity‑check the current software run and ensure our pipeline faithfully reproduces the MNRAS 2022 methodology. The primary goals were to (1) verify that our matching and reporting weren’t obscuring true coverage, and (2) confirm the astrometric accuracy needed for the “no Gaia & no PS1 within 5″” criterion documented in our workflow
-
-### Findings
-- Metrics interpretation: The “matched %” lines in summaries were pair‑count densities (joins), not per‑detection coverage. This can exceed 100% and mislead downstream readers
-- Astrometry drift on photographic plates (DSS1/POSS‑I): Many tiles showed median residuals ~0.5–1.0″ and P90 ~1.2–1.8″, typical when relying only on catalogue WCS and non‑windowed centroids
-- Outcome after fixes: After switching to windowed centroids and adding a per‑tile Gaia‑tied plate solution, warnings dropped dramatically (only a small handful remain, mostly low‑match tiles)
-
-### How it was fixed
-A post‑pipeline Step 0 script that fits a per‑tile polynomial plate solution to Gaia matches, then writes corrected coordinates into each tile’s final_catalog_wcsfix.csv. Downstream scripts now prefer these corrected columns if present:
-- Post‑0: fit plate solution → writes final_catalog_wcsfix.csv (columns: RA_corr, Dec_corr)
-- Post‑1: unmatched & final → automatically uses corrected RA/Dec where available (filter_unmatched_all.py)
-- Post‑2: run summaries → now also reports tiles_with_wcsfix (summarize_runs.py)
-- Post‑3: merge catalogs → prefers corrected RA/Dec when present (merge_tile_catalogs.py)
-
-### what do you need to do
-Update to the latest version, rebuild docker and keep running. More reading [in the workflow doc](WORKFLOW.md)
-
-### what to expect next
-TBD
-</details>
-
-## Hybrid IR-aware finalization (recommended)
-_Produce **MNRAS-style numbers immediately after IR annotation**, without permanently duplicating large datasets._
-
-**Why here?** In the MNRAS 2022 workflow, a large fraction of candidates are removed **after** checking other archives (dominantly IR) and **before** forming the final list. Our NEOWISE Single Exposure (L1b) flags stage (Post 1.5) is the right junction to apply IR awareness.  
-See: MNRAS 2022 §2–3; and this repo’s [WORKFLOW.md](WORKFLOW.md) → **Post 1.5** (NEOWISE TAP) and **Post 1.6** (Final Candidates, Hybrid).
-
-### What the hybrid model does
-1. **Annotate only** (no large permanent copies):  
-   - Keep `./data/local-cats/_master_optical_parquet/` as the single source of truth.  
-   - Keep the compact IR flags sidecar:  
-     `./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet`.  
-   - Join *at read time* when you need IR-aware operations.
-
-2. **Emit MNRAS-style counts immediately** after annotation (no big writes):  
-   - A small report with row counts after each gate (IR, morphology/spikes, HPM @ POSS-I epoch, SkyBoT, SuperCOSMOS, global dedupe) is written to  
-     `./data/vasco-candidates/post16/post16_match_summary.txt`.
-
-3. **Optional** export a strict (IR-excluded) view for exchange:  
-   - If needed, write `./data/vasco-candidates/post16/candidates_final_core.parquet` (and/or CSV), then delete later to conserve disk.
-
-### Quick commands
-```bash
-# 1) Ensure NEOWISE flags exist and QC is OK (Post 1.5)
-python ./scripts/extract_positions_for_neowise_se.py \
-  --parquet-root ./data/local-cats/_master_optical_parquet \
-  --out-dir ./data/local-cats/tmp/positions --chunk-size 20000
-make post15_async_chunks
-make post15_sidecar
-python ./scripts/qc_global_summary.py \
-  ./data/local-cats/_master_optical_parquet_irflags/neowise_se_flags_ALL.parquet \
-  ./data/local-cats/_master_optical_parquet_irflags/neowise_se_global_summary.csv
-
-# 2) MNRAS-style numbers immediately after IR annotation (counts-only)
-make post16_counts
-# -> writes ./data/vasco-candidates/post16/post16_match_summary.txt
-
-# 3) (Optional) export strict view (IR-excluded) for sharing
-make post16_strict
-# -> writes ./data/vasco-candidates/post16/candidates_final_core.parquet
-```
-
 
 ## Recent Improvements
-
-### New: Hybrid IR-aware finalization
-See [Hybrid IR-aware finalization (MNRAS counts immediately)](#hybrid-ir-aware-finalization-recommended).
 
 ### MNRAS spike boundary & morphology - 2026-01-04
 - See release notes for details
@@ -614,31 +523,5 @@ Estimates with 30′×30′ tiles (POSS‑I ~ Dec ≥ −30°)
 ---
 ## License & contributions
 
-See `LICENSE` (if present). PRs/issues are welcome for reliability, data provenance, and reproducibility improvements.
+See `LICENSE` (if present). PRs/issues are welcome for reliability, data provenance, and other improvements.
 
-
-# README Addendum
-
-## NEOWISE delta & healthcheck (2026‑01‑04)
-
-This addendum introduces a fast, incremental NEOWISE workflow and a new health checker for async TAP jobs. It complements the main README and **WORKFLOW.md** without bloating core docs.
-
----
-
-## Quick links
-- Delta [runbook](docs/RUNBOOK_NEOWISE_DELTA.md)
-- TAP [healthcheck](docs/HEALTHCHECK_NEOWISE.md)
-- Script: `scripts/healthcheck_tap_neowise.py`
-
----
-
-## What changed (delta mode)
-- **Extractor** now writes **only new/changed** Parquet parts to `./data/local-cats/tmp/positions/new/` (manifest-gated; default chunk size **20k**).  
-  Command:
-  ```bash
-  python ./scripts/extract_positions_for_neowise_se.py \
-    --parquet-root ./data/local-cats/_master_optical_parquet \
-    --out-dir      ./data/local-cats/tmp/positions \
-    --chunk-size   20000 \
-    --manifest     ./data/local-cats/tmp/positions_manifest.json
- 
