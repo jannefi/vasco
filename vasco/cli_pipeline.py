@@ -229,7 +229,7 @@ def _apply_mnras_filters_and_spikes(tile_dir: Path, sex_csv: Path, buckets: dict
             rows, bright,
             SpikeConfig(rules=[
                 SpikeRuleConst(const_max_mag=12.4),
-                SpikeRuleLine(a=-0.09/60.0, b=15.3),  # slope per arcmin
+                SpikeRuleLine(a=-0.09, b=15.3),  # slope per arsec
             ])
         )
         buckets['spikes_rejected'] += len(rejected)
