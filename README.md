@@ -16,6 +16,14 @@ Public context:
 
 See the project [wiki](https://github.com/jannefi/vasco/wiki)
 
+## breaking change 24-Feb-2026 affecting pipeline step 4
+
+I have re-implemented MNRAS 2022 spike removal (vasco/mnras/spikes.py). By default, it will use the new scalar implementation which is based on the MAPS catalog. You need to have the MAPS catalog mirrored locally as Parquet for this to work. There are helper scripts that you can use to mirror the full MAPS catalog (about 14GB), changing it into Parquet, and adding modern coordinates. 
+
+You can use the old implementation by setting an environment variable: VASCO_SPIKES_ENGINE=legacy
+
+This is the first breaking change after the previous announcement. More major changes are on their way. I cannot quarantee that all scripts will work as-is after changes. Some of them are not even supposed to work now that we no longer try to reproduce MNRAS 2022 pipeline.
+
 ---
 
 ## Table of Contents
