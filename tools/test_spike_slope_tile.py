@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 
+
 def _add_repo_to_syspath() -> Path:
     """
     Make the 'vasco' package importable without requiring pip install -e.
@@ -51,6 +52,8 @@ def _add_repo_to_syspath() -> Path:
 _DETECTED_REPO = _add_repo_to_syspath()
 
 from astropy.table import Table  # type: ignore
+#from vasco.mnras.spikes import SpikeRuleConst, SpikeRuleLine, SpikeConfig, BrightStar
+from vasco.mnras.apply_spike_cuts_vectorized  import apply_spike_cuts_vectorized
 
 from vasco.mnras.filters_mnras import apply_extract_filters, apply_morphology_filters
 from vasco.mnras.spikes import (
@@ -216,6 +219,17 @@ def main(tile_path: str) -> int:
     kept_new, rej_new = apply_spike_cuts(
         morph_rows, bright, cfg_new, src_ra_key="ALPHA_J2000", src_dec_key="DELTA_J2000"
     )
+
+    kept_vec, rej_vec = apply_spike_cuts_vectorized(
+       morph_rows, bright, cfg_new,
+       src_ra_key="ALPHA_J2000",
+       src_dec_key="DELTA_J2000",
+    )
+    numbers_old = numbers_set(kept_new)
+    numbers_vec = numbers_set(kept_vec)
+    print("delta old vs vec:",
+       len(numbers_vec - numbers_old),
+       len(numbers_old - numbers_vec))
 
     write_csv_rows(out_dir / "sex_spikes_old.csv", kept_old)
     write_csv_rows(out_dir / "rejected_old.csv", rej_old)
