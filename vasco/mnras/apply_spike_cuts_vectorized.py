@@ -1,14 +1,10 @@
 # vasco/mnras/apply_spike_cuts_vectorized.py
 from __future__ import annotations
-
 from typing import Any, Dict, Iterable, List, Tuple
-
 import numpy as np
 import astropy.units as u
 from astropy.coordinates import SkyCoord
-
 from vasco.mnras.spikes import BrightStar, SpikeConfig, SpikeRuleConst, SpikeRuleLine
-
 
 def apply_spike_cuts_vectorized(
     tile_rows: Iterable[Dict[str, Any]],
@@ -21,15 +17,14 @@ def apply_spike_cuts_vectorized(
     Vectorized spike rejection using nearest-neighbor matching.
 
     Semantics follow vasco.mnras.spikes.apply_spike_cuts:
-      - nearest bright star within cfg.search_radius_arcmin determines (d_arcsec, m_near)
-      - reject if any rule matches:
-          * CONST: m_near <= const_max_mag
-          * LINE:  m_near < a*d_arcsec + b   (strict inequality)
-      - annotate rejected rows with:
-          spike_d_arcmin, spike_m_near, spike_reason
-      - annotate kept rows with spike_reason="" (and keep 'no_wcs' rows as kept)
+    - nearest bright star within cfg.search_radius_arcmin determines (d_arcsec, m_near)
+    - reject if any rule matches:
+      * CONST: m_near <= const_max_mag
+      * LINE: m_near < a*d_arcsec + b (strict inequality)
+    - annotate rejected rows with:
+      spike_d_arcmin, spike_m_near, spike_reason
+    - annotate kept rows with spike_reason="" (and keep 'no_wcs' rows as kept)
     """
-
     rows = list(tile_rows)
     if not rows:
         return [], []
@@ -47,7 +42,6 @@ def apply_spike_cuts_vectorized(
     det_ra = []
     det_dec = []
     valid_pos = []  # positions in `rows` list that have valid coords
-
     for i, r in enumerate(rows):
         try:
             det_ra.append(float(r[src_ra_key]))
@@ -73,7 +67,6 @@ def apply_spike_cuts_vectorized(
     b_ra = np.asarray([b.ra for b in bright], dtype=np.float64)
     b_dec = np.asarray([b.dec for b in bright], dtype=np.float64)
     b_mag = np.asarray([b.rmag for b in bright], dtype=np.float64)
-
     bright_coords = SkyCoord(b_ra * u.deg, b_dec * u.deg, frame="icrs")
 
     # --- nearest neighbor for each detection ---
@@ -83,7 +76,17 @@ def apply_spike_cuts_vectorized(
 
     # If nearest bright star is outside cfg.search_radius_arcmin, treat as "no bright star"
     max_arcsec = float(cfg.search_radius_arcmin) * 60.0
-    has_bright = d_arcsec <= max_arcsec
+
+    # Guard against invalid/sentinel magnitudes (e.g. -999 from some feeds).
+    # Also enforce the catalog “bright-star” upper bound as a safety net.
+    valid_mag = (
+        np.isfinite(m_near)
+        & (m_near > -900.0)  # kills -999 style sentinels
+        & (m_near >= 0.0)
+        & (m_near <= float(cfg.rmag_max_catalog))
+    )
+
+    has_bright = (d_arcsec <= max_arcsec) & valid_mag
 
     # --- apply rules (only where has_bright) ---
     reject = np.zeros(len(d_arcsec), dtype=bool)
@@ -97,7 +100,6 @@ def apply_spike_cuts_vectorized(
                 reasons[j].append(
                     f"CONST(m*={m_near[j]:.2f} <= {float(rule.const_max_mag):.2f})"
                 )
-
         elif isinstance(rule, SpikeRuleLine):
             a = float(rule.a)
             b = float(rule.b)
@@ -112,19 +114,17 @@ def apply_spike_cuts_vectorized(
     # --- rebuild full rows list (kept + rejected) ---
     kept: List[Dict[str, Any]] = []
     rejected: List[Dict[str, Any]] = []
-
-    det_i = 0  # index into det_ra/dec arrays
+    det_i = 0  # index into det arrays
     valid_set = set(valid_pos)
 
     for i, r in enumerate(rows):
         r2 = dict(r)
-
         if i not in valid_set:
             r2["spike_reason"] = "no_wcs"
             kept.append(r2)
             continue
 
-        # If no bright star within search radius: keep
+        # If no usable bright star (outside radius OR invalid magnitude): keep
         if not has_bright[det_i]:
             r2["spike_reason"] = ""
             kept.append(r2)

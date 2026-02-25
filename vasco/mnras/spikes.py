@@ -1,6 +1,5 @@
-# MNRAS-2022 arcsec spike rule: updated Jan 2026
+# MNRAS-2022 arcsec spike rule: updated Feb 2026
 from __future__ import annotations
-
 import math
 import os
 from dataclasses import dataclass
@@ -28,6 +27,29 @@ class BrightStar:
     ra: float
     dec: float
     rmag: float  # proxy magnitude (PS1 rMeanPSFMag or MAPS magdO, etc.)
+
+# ---------------- magnitude sanity ----------------
+def _is_valid_mag(m: float) -> bool:
+    """Return True if magnitude value is usable for spike rules.
+
+    Reject known sentinel/missing encodings (e.g. -999) and non-physical values.
+    """
+    try:
+        mf = float(m)
+    except Exception:
+        return False
+    if not math.isfinite(mf):
+        return False
+    # Common missing-value sentinel(s) seen in some feeds
+    if mf <= -900.0:  # catches -999, -9999, ...
+        return False
+    # For our spike screening logic, negative magnitudes are not expected/useful
+    if mf < 0.0:
+        return False
+    # Ultra-faint magnitudes are not useful for diffraction-spike logic
+    if mf > 50.0:
+        return False
+    return True
 
 # ---------------- PS1 bright-star fetch ----------------
 def fetch_bright_ps1(
@@ -65,7 +87,8 @@ def fetch_bright_ps1(
         for row in rdr:
             try:
                 rmag = float(row.get("rMeanPSFMag", "nan"))
-                if not (rmag <= rmag_max):
+                # Reject missing/sentinel/invalid mags (e.g. -999) before applying any thresholds
+                if (not _is_valid_mag(rmag)) or (not (rmag <= rmag_max)):
                     continue
                 ra = float(row["raMean"])
                 dec = float(row["decMean"])
@@ -126,7 +149,6 @@ def apply_spike_cuts_scalar(
     """
     kept: List[Dict[str, Any]] = []
     rejected: List[Dict[str, Any]] = []
-
     for r in tile_rows:
         # Parse detection coordinates
         try:
@@ -151,16 +173,20 @@ def apply_spike_cuts_scalar(
             kept.append(r2)
             continue
 
+        # If nearest-star magnitude is invalid/sentinel (e.g. -999), do not apply spike rules
+        if (m_near is None) or (not _is_valid_mag(float(m_near))):
+            r2 = dict(r); r2["spike_reason"] = ""
+            kept.append(r2)
+            continue
+
         reject = False
         reasons: List[str] = []
-
         for rule in (cfg.rules or []):
             if isinstance(rule, SpikeRuleConst):
                 # equality should reject (<=)
                 if m_near <= rule.const_max_mag:
                     reject = True
                     reasons.append(f"CONST(m*={m_near:.2f} <= {rule.const_max_mag:.2f})")
-
             elif isinstance(rule, SpikeRuleLine):
                 # strict inequality on the line rule to keep equality
                 thresh = (rule.a) * dmin_arcsec + rule.b
@@ -174,12 +200,10 @@ def apply_spike_cuts_scalar(
         r2["spike_d_arcmin"] = round(dmin_arcsec / 60.0, 3)
         r2["spike_m_near"] = m_near if m_near is not None else float("nan")
         r2["spike_reason"] = ";".join(reasons) if reject else ""
-
         if reject:
             rejected.append(r2)
         else:
             kept.append(r2)
-
     return kept, rejected
 
 # ---------------- apply rules (DEFAULT router) ----------------
@@ -192,18 +216,14 @@ def apply_spike_cuts(
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Production entrypoint.
-
     Default: vectorized implementation (fast).
     Fallback: set VASCO_SPIKES_ENGINE=scalar to use legacy scalar engine.
     """
     engine = os.getenv("VASCO_SPIKES_ENGINE", "vectorized").strip().lower()
-
     if os.getenv("VASCO_SPIKES_DEBUG"):
         print(f"[spikes] engine={engine}")
-
     if engine in ("scalar", "legacy", "slow"):
         return apply_spike_cuts_scalar(tile_rows, bright, cfg, src_ra_key=src_ra_key, src_dec_key=src_dec_key)
-
     # Lazy import avoids circular import issues.
     from vasco.mnras.apply_spike_cuts_vectorized import apply_spike_cuts_vectorized
     return apply_spike_cuts_vectorized(tile_rows, bright, cfg, src_ra_key=src_ra_key, src_dec_key=src_dec_key)
@@ -232,7 +252,6 @@ def read_ecsv(path: Path) -> List[Dict[str, Any]]:
                 raise e
         else:
             raise e
-
     rows: List[Dict[str, Any]] = []
     for row in tab:
         d: Dict[str, Any] = {}
@@ -258,6 +277,7 @@ def write_ecsv(rows: List[Dict[str, Any]], path: Path):
 # ---------------- optional USNO-B mask placeholder ----------------
 def apply_usno_b1_mask(catalog_path, ra, dec, radius_deg=0.5):
     """Placeholder for USNO-B1.0-based masking if you want literal paper mags.
+
     Currently not implemented; PS1 fetch is the default source for spike rules.
     """
     print(f"[INFO] (placeholder) USNO-B1.0 mask around RA={ra}, Dec={dec}, R={radius_deg} deg")
