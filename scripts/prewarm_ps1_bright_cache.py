@@ -6,9 +6,52 @@ import json
 import time
 import signal
 import logging
+import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+def _add_repo_to_syspath() -> Path:
+    """
+    Make the 'vasco' package importable without requiring pip install -e.
+    Supports both layouts:
+      - <repo>/vasco/__init__.py
+      - <repo>/src/vasco/__init__.py
+    Returns the detected repo root for diagnostics.
+    """
+    here = Path(__file__).resolve()
+    repo_root = None
+    add_path = None
+
+    for p in [here] + list(here.parents):
+        # flat layout
+        if (p / "vasco" / "__init__.py").exists():
+            repo_root = p
+            add_path = p
+            break
+        # src layout
+        if (p / "src" / "vasco" / "__init__.py").exists():
+            repo_root = p
+            add_path = p / "src"
+            break
+
+    if add_path is None:
+        # Fallback: add CWD to sys.path (sometimes enough), but also raise a helpful error.
+        cwd = Path.cwd().resolve()
+        if str(cwd) not in sys.path:
+            sys.path.insert(0, str(cwd))
+        raise ModuleNotFoundError(
+            "Could not locate 'vasco' package. Looked for vasco/__init__.py or src/vasco/__init__.py "
+            f"from {here} upwards. Current working dir is {cwd}."
+        )
+
+    if str(add_path) not in sys.path:
+        sys.path.insert(0, str(add_path))
+    return repo_root or Path.cwd().resolve()
+
+
+# --- ensure imports work before importing vasco.*
+_DETECTED_REPO = _add_repo_to_syspath()
 
 from vasco.mnras.spikes import fetch_bright_ps1  # uses your current PS1-based bright-star fetcher
 
