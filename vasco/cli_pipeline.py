@@ -173,6 +173,34 @@ def _to_float_dec(val: str | float) -> float:
     except Exception:
         return float(_parse_dec(str(val)))
 
+def _read_bright_cache(path: Path):
+    import csv as _csv
+    from vasco.mnras.spikes import BrightStar
+    out = []
+    if not path.exists() or path.stat().st_size == 0:
+        return out
+    with path.open(newline='', encoding='utf-8') as f:
+        r = _csv.DictReader(f)
+        for row in r:
+            try:
+                out.append(BrightStar(
+                    ra=float(row['ra']),
+                    dec=float(row['dec']),
+                    rmag=float(row['rmag']),
+                ))
+            except Exception:
+                continue
+    return out
+
+def _write_bright_cache(path: Path, bright):
+    import csv as _csv
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('w', newline='', encoding='utf-8') as f:
+        w = _csv.DictWriter(f, fieldnames=['ra','dec','rmag'])
+        w.writeheader()
+        for b in bright:
+            w.writerow({'ra': b.ra, 'dec': b.dec, 'rmag': b.rmag})
+
 # --- NEW: MNRAS integration helpers ---
 
 def _apply_mnras_filters_and_spikes(tile_dir: Path, sex_csv: Path, buckets: dict) -> Path:
@@ -203,21 +231,49 @@ def _apply_mnras_filters_and_spikes(tile_dir: Path, sex_csv: Path, buckets: dict
     # 2) Morphology gates (PSF-aware)
     tab = apply_morphology_filters(
         tab,
-        cfg={'two_fwhm_lt': 7.0, 'elongation_lt': 1.3, 'spread_model_min': -0.002}
+        cfg={
+            'fwhm_lower': 2.0,
+            'fwhm_upper': 7.0,
+            'elongation_lt': 1.3,
+            'spread_model_min': -0.002,
+            # keep the paper-style robust clipping enabled (it defaults True in filters_mnras.py)
+            'sigma_clip': True,
+            'sigma_k': 2.0,
+            # enable the paper’s pixel-extent guards when columns exist (your configs do output them)
+            'extent_delta_lt': 2.0,
+            'extent_min': 1.0,
+        }
     )
 
     n1 = len(tab)
     buckets['morphology_rejected'] += max(0, n0 - n1)
+    # Early exit: if nothing survives morphology, don't fetch bright-star catalogs
+    if n1 == 0:
+        # Preserve a valid CSV artifact (empty) and a valid rejected artifact (empty)
+        out_csv.write_text('', encoding='utf-8')
+        rej_path = tile_dir / 'catalogs' / 'sextractor_spike_rejected.csv'
+        rej_path.write_text('', encoding='utf-8')
+        return out_csv
 
     # Write intermediate
     tab.write(str(out_csv), format='ascii.csv', overwrite=True)
 
     # 3) Bright-star spike removal via PS1 (within ~35′, r<=16)
     center = _tile_center_from_index_or_name(tile_dir)
+    bright = []
     if center:
+        cache_path = (tile_dir / 'catalogs' / 'ps1_bright_stars_r16_rad35.csv')
         try:
-            bright = fetch_bright_ps1(center[0], center[1],
-                                      radius_arcmin=35.0, rmag_max=16.0, mindetections=2)
+            # Use cache if present
+            if cache_path.exists() and cache_path.stat().st_size > 0:
+                bright = _read_bright_cache(cache_path)
+            else:
+                bright = fetch_bright_ps1(
+                    center[0], center[1],
+                    radius_arcmin=35.0, rmag_max=16.0, mindetections=2
+                )
+                # Save cache for fast reruns
+                _write_bright_cache(cache_path, bright)
         except Exception:
             bright = []
 
@@ -254,7 +310,7 @@ def _apply_mnras_filters_and_spikes(tile_dir: Path, sex_csv: Path, buckets: dict
 
     return out_csv
 
-# HPM filtering helpers unchanged
+    # HPM filtering helpers unchanged
 
 def _sep_arcsec(ra1_deg: float, dec1_deg: float, ra2_deg: float, dec2_deg: float) -> float:
     ra1 = math.radians(ra1_deg); dec1 = math.radians(dec1_deg)
@@ -899,8 +955,8 @@ def main(argv: List[str] | None = None) -> int:
     one.add_argument('--workdir', required=True)
     one.add_argument('--xmatch-backend', choices=['local','cds'], default='local')
     one.add_argument('--xmatch-radius-arcsec', type=float, default=5.0)
-    one.add_argument('--cds-gaia-table', default=os.getenv('VASCO_CDS_GAIA_TABLE'))
-    one.add_argument('--cds-ps1-table', default=os.getenv('VASCO_CDS_PS1_TABLE'))
+    one.add_argument('--cds-gaia-table', default=os.getenv('VASCO_CDS_GAIA_TABLE', 'I/355/gaiadr3'))
+    one.add_argument('--cds-ps1-table', default=os.getenv('VASCO_CDS_PS1_TABLE', 'II/389/ps1_dr2'))
     one.set_defaults(func=cmd_one)
 
     s1 = sub.add_parser('step1-download', help='Download tile FITS to raw/ (POSSI-E enforced; header sidecar)')
@@ -925,8 +981,8 @@ def main(argv: List[str] | None = None) -> int:
     s4.add_argument('--xmatch-backend', choices=['local','cds'], default='local')
     s4.add_argument('--xmatch-radius-arcsec', type=float, default=5.0)
     s4.add_argument('--size-arcmin', type=float, default=30.0)
-    s4.add_argument('--cds-gaia-table', default=os.getenv('VASCO_CDS_GAIA_TABLE'))
-    s4.add_argument('--cds-ps1-table', default=os.getenv('VASCO_CDS_PS1_TABLE'))
+    s4.add_argument('--cds-gaia-table', default=os.getenv('VASCO_CDS_GAIA_TABLE', 'I/355/gaiadr3'))
+    s4.add_argument('--cds-ps1-table', default=os.getenv('VASCO_CDS_PS1_TABLE', 'II/389/ps1_dr2'))
     # NEW: fallback toggle
     s4.add_argument('--fallback-empty-use-raw', action='store_true')
     s4.set_defaults(func=cmd_step4_xmatch)
