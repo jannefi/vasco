@@ -5,7 +5,7 @@ __pycache__/
 
 # C extensions
 *.so
-
+/work
 # my stuff
 scripts/automation/
 /logs
