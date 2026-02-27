@@ -24,6 +24,10 @@ You can use the old implementation by setting an environment variable: VASCO_SPI
 
 This is the first breaking change after the previous announcement. More major changes are on their way. I cannot quarantee that all scripts will work as-is after changes. Some of them are not even supposed to work now that we no longer try to reproduce MNRAS 2022 pipeline.
 
+## Gaia tied polynomial coordinates (27-Feb-2026)
+
+Please see [WCS FIX](WCSFIX.md)
+
 ---
 
 ## Table of Contents
