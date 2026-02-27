@@ -433,9 +433,16 @@ def cmd_one(args: argparse.Namespace) -> int:
     # DO NOT pre-create tile directory; keep logger central (optional)
     run_dir = Path(args.workdir)  # do not call _build_run_dir here
     lg = dl.configure_logger(Path('./data/logs'))
-
     ra = _to_float_ra(args.ra)
     dec = _to_float_dec(args.dec)
+
+    def _cache_ok(path: Path) -> bool:
+        """Return True if cache CSV exists, is non-empty, and has RA/Dec columns."""
+        try:
+            p = Path(path)
+            return p.exists() and p.stat().st_size > 0 and _csv_has_radec(p)
+        except Exception:
+            return False
 
     # --- STEP 1: download with deferral (downloader will stage & promote only on success)
     try:
@@ -449,7 +456,6 @@ def cmd_one(args: argparse.Namespace) -> int:
         )
         # Enforce POSSI-E post-promotion; may unlink & raise if not POSSI-E
         _enforce_possi_e_or_skip(Path(fits), lg)
-
     except RuntimeError as e:
         # Non-POSS enforcement path keeps your original bookkeeping — but only
         # write RUN_* artifacts if the tile folder already exists.
@@ -467,7 +473,6 @@ def cmd_one(args: argparse.Namespace) -> int:
                 _write_json(run_dir / 'RUN_INDEX.json', [])
                 _write_overview(run_dir, counts, [], missing)
             return 0
-
         # For non-FITS / non-WCS / other failures: downloader already wrote error artifacts
         print('[STEP1][ERROR]', str(e))
         return 1
@@ -486,25 +491,48 @@ def cmd_one(args: argparse.Namespace) -> int:
     backend = args.xmatch_backend
 
     if backend == 'local':
+        # Cache-aware fetch-on-miss: avoid network calls if cache already exists
+        gaia_cache = run_dir / 'catalogs' / 'gaia_neighbourhood.csv'
         try:
-            fetch_gaia_neighbourhood(run_dir, ra, dec, radius_arcmin)
+            if os.getenv('VASCO_FORCE_FETCH_GAIA'):
+                fetch_gaia_neighbourhood(run_dir, ra, dec, radius_arcmin)
+            elif _cache_ok(gaia_cache):
+                print('[POST][INFO]', run_dir.name, 'Gaia cache present — skipping fetch')
+            else:
+                fetch_gaia_neighbourhood(run_dir, ra, dec, radius_arcmin)
         except Exception as e:
             print('[POST][WARN]', run_dir.name, 'Gaia fetch failed:', e)
+
+        ps1_cache = run_dir / 'catalogs' / 'ps1_neighbourhood.csv'
         try:
             if os.getenv('VASCO_DISABLE_PS1'):
                 print('[POST][INFO]', run_dir.name, 'PS1 disabled by env — skipping fetch')
             else:
-                fetch_ps1_neighbourhood(run_dir, ra, dec, radius_arcmin)
+                if os.getenv('VASCO_FORCE_FETCH_PS1'):
+                    fetch_ps1_neighbourhood(run_dir, ra, dec, radius_arcmin)
+                elif _cache_ok(ps1_cache):
+                    print('[POST][INFO]', run_dir.name, 'PS1 cache present — skipping fetch')
+                else:
+                    fetch_ps1_neighbourhood(run_dir, ra, dec, radius_arcmin)
         except Exception as e:
             print('[POST][WARN]', run_dir.name, 'PS1 fetch failed:', e)
+
+        usnob_cache = run_dir / 'catalogs' / 'usnob_neighbourhood.csv'
         try:
             if os.getenv('VASCO_DISABLE_USNOB'):
                 print('[POST][INFO]', run_dir.name, 'USNO-B disabled by env — skipping fetch')
             else:
-                fetch_usnob_neighbourhood(run_dir, ra, dec, radius_arcmin)
-                print('[POST]', run_dir.name, 'USNO-B (VizieR) -> catalogs/usnob_neighbourhood.csv')
+                if os.getenv('VASCO_FORCE_FETCH_USNOB'):
+                    fetch_usnob_neighbourhood(run_dir, ra, dec, radius_arcmin)
+                    print('[POST]', run_dir.name, 'USNO-B (VizieR) -> catalogs/usnob_neighbourhood.csv')
+                elif _cache_ok(usnob_cache):
+                    print('[POST][INFO]', run_dir.name, 'USNO-B cache present — skipping fetch')
+                else:
+                    fetch_usnob_neighbourhood(run_dir, ra, dec, radius_arcmin)
+                    print('[POST]', run_dir.name, 'USNO-B (VizieR) -> catalogs/usnob_neighbourhood.csv')
         except Exception as e:
             print('[POST][WARN]', run_dir.name, 'USNO-B fetch failed:', e)
+
         try:
             _post_xmatch_tile(run_dir, p2, radius_arcsec=float(args.xmatch_radius_arcsec))
         except Exception as e:
@@ -521,6 +549,7 @@ def cmd_one(args: argparse.Namespace) -> int:
             )
         except Exception as e:
             print('[POST][WARN] CDS xmatch failed for', run_dir.name, ':', e)
+
     else:
         print('[POST][WARN]', run_dir.name, 'Unknown xmatch backend:', backend)
 
@@ -1002,35 +1031,74 @@ def cmd_step4_xmatch(args: argparse.Namespace) -> int:
     if not p2.exists():
         print('[STEP4][ERROR] pass2.ldac missing. Run step3-psf-and-pass2 first.')
         return 2
+
+    def _cache_ok(path: Path) -> bool:
+        """Return True if cache CSV exists, is non-empty, and has RA/Dec columns."""
+        try:
+            p = Path(path)
+            return p.exists() and p.stat().st_size > 0 and _csv_has_radec(p)
+        except Exception:
+            return False
+
     backend = args.xmatch_backend
     if backend == 'local':
+        # Best-effort tile center (used by neighbourhood fetchers)
         try:
             stem = Path(json.loads((run_dir / 'RUN_INDEX.json').read_text(encoding='utf-8'))[0]['tile']).name
             parts = stem.split('_'); ra_t = float(parts[1]); dec_t = float(parts[2])
         except Exception:
             ra_t, dec_t = 0.0, 0.0
+
         radius_arcmin = args.size_arcmin * (2 ** 0.5) * 0.5
+
+        # -----------------------------
+        # Cache-aware fetch-on-miss
+        # -----------------------------
+        gaia_cache = run_dir / 'catalogs' / 'gaia_neighbourhood.csv'
         try:
-            fetch_gaia_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
+            if os.getenv('VASCO_FORCE_FETCH_GAIA'):
+                fetch_gaia_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
+            elif _cache_ok(gaia_cache):
+                print('[STEP4][INFO]', run_dir.name, 'Gaia cache present — skipping fetch')
+            else:
+                fetch_gaia_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
         except Exception as e:
             print('[STEP4][WARN]', run_dir.name, 'Gaia fetch failed:', e)
+
+        ps1_cache = run_dir / 'catalogs' / 'ps1_neighbourhood.csv'
         try:
             if os.getenv('VASCO_DISABLE_PS1'):
                 print('[STEP4][INFO]', run_dir.name, 'PS1 disabled by env')
             else:
-                fetch_ps1_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
+                if os.getenv('VASCO_FORCE_FETCH_PS1'):
+                    fetch_ps1_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
+                elif _cache_ok(ps1_cache):
+                    print('[STEP4][INFO]', run_dir.name, 'PS1 cache present — skipping fetch')
+                else:
+                    fetch_ps1_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
         except Exception as e:
             print('[STEP4][WARN]', run_dir.name, 'PS1 fetch failed:', e)
+
+        usnob_cache = run_dir / 'catalogs' / 'usnob_neighbourhood.csv'
         try:
             if os.getenv('VASCO_DISABLE_USNOB'):
                 print('[STEP4][INFO]', run_dir.name, 'USNO-B disabled by env')
             else:
-                fetch_usnob_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
-            print('[STEP4]', run_dir.name, 'USNO-B -> catalogs/usnob_neighbourhood.csv')
+                if os.getenv('VASCO_FORCE_FETCH_USNOB'):
+                    fetch_usnob_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
+                    print('[STEP4]', run_dir.name, 'USNO-B -> catalogs/usnob_neighbourhood.csv')
+                elif _cache_ok(usnob_cache):
+                    print('[STEP4][INFO]', run_dir.name, 'USNO-B cache present — skipping fetch')
+                else:
+                    fetch_usnob_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
+                    print('[STEP4]', run_dir.name, 'USNO-B -> catalogs/usnob_neighbourhood.csv')
         except Exception as e:
             print('[STEP4][WARN]', run_dir.name, 'USNO-B fetch failed:', e)
+
+        # Proceed to xmatch using whatever caches exist
         _post_xmatch_tile(run_dir, p2, radius_arcsec=float(args.xmatch_radius_arcsec))
         return 0
+
     if backend == 'cds':
         _cds_xmatch_tile(
             run_dir, p2,
@@ -1039,6 +1107,7 @@ def cmd_step4_xmatch(args: argparse.Namespace) -> int:
             fallback_empty_use_raw=bool(getattr(args, 'fallback_empty_use_raw', False)),
         )
         return 0
+
     print('[STEP4][WARN]', run_dir.name, 'Unknown backend:', backend)
     return 0
 
