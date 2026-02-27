@@ -22,6 +22,7 @@ from vasco.mnras.hpm import backprop_gaia_row
 from vasco.mnras.buckets import init_buckets, finalize
 from vasco.mnras.report import write_summary
 import csv as _csv
+from vasco.wcsfix_early import ensure_wcsfix_catalog, WcsFixConfig
 
 # --- helpers ---
 def _ensure_tool_cli(tool: str) -> None:
@@ -639,41 +640,127 @@ def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
 
 
 def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> None:
+    """
+    Step4 (local backend): prepare catalogs, apply (current) MNRAS-ish filters/spike logic,
+    then xmatch against Gaia/PS1/USNO.
+
+    Updated behavior:
+      - Ensures early WCSFIX canonical coordinates (RA_corr/Dec_corr) using local Gaia cache
+        by generating catalogs/sextractor_pass2.wcsfix.csv and using it downstream.
+      - Xmatch will automatically prefer RA_corr/Dec_corr if xmatch_stilts.py is updated to include them.
+      - If WCSFIX cannot be fit, pipeline proceeds with raw coords and writes wcsfix_status.json.
+    """
     tile_dir = Path(tile_dir)
-    xdir = tile_dir / 'xmatch'; xdir.mkdir(parents=True, exist_ok=True)
+    xdir = tile_dir / 'xmatch'
+    xdir.mkdir(parents=True, exist_ok=True)
+
+    # 1) Ensure base SExtractor CSV exists (big)
     sex_csv = _ensure_sextractor_csv(tile_dir, pass2_ldac)
-    # --- NEW: apply MNRAS filters & spike cuts before any xmatch ---
+
+    # 2) Apply MNRAS filters & spikes before any xmatch (current behavior kept)
     buckets = init_buckets()
-    sex_cols = _detect_radec_columns(_apply_mnras_filters_and_spikes(tile_dir, sex_csv, buckets)) or ('ALPHA_J2000','DELTA_J2000')
+
+    # 3) Ensure Gaia/PS1/USNO neighbourhood caches are present (fetch stage happens before this in cmd_step4_xmatch)
     gaia_csv = tile_dir / 'catalogs' / 'gaia_neighbourhood.csv'
     ps1_csv = tile_dir / 'catalogs' / 'ps1_neighbourhood.csv'
     usnob_csv = tile_dir / 'catalogs' / 'usnob_neighbourhood.csv'
+
+    # 4) Early canonical coordinates (WCSFIX) using local Gaia cache
+    #    - Write catalogs/sextractor_pass2.wcsfix.csv (adds RA_corr/Dec_corr)
+    #    - If fails, continue with raw sex_csv; status is written to catalogs/wcsfix_status.json
+    sex_for_downstream = sex_csv
+    try:
+        # Try to provide the tile center if we can (improves RA wrap behavior and stability)
+        center = _tile_center_from_index_or_name(tile_dir)
+        cfg = WcsFixConfig(
+            bootstrap_radius_arcsec=float(os.getenv("VASCO_WCSFIX_BOOTSTRAP_ARCSEC", "5.0")),
+            degree=int(os.getenv("VASCO_WCSFIX_DEGREE", "2")),
+            min_matches=int(os.getenv("VASCO_WCSFIX_MIN_MATCHES", "20")),
+        )
+        if gaia_csv.exists() and gaia_csv.stat().st_size > 0:
+            out_wcs, status = ensure_wcsfix_catalog(
+                tile_dir,
+                sex_csv,
+                gaia_csv,
+                center=center,
+                cfg=cfg,
+                force=bool(os.getenv("VASCO_WCSFIX_FORCE", "").strip()),
+            )
+            if status.get("ok"):
+                sex_for_downstream = out_wcs
+                print('[POST]', tile_dir.name, 'WCSFIX OK ->', out_wcs.name)
+            else:
+                print('[POST][INFO]', tile_dir.name, 'WCSFIX skipped/failed -> using raw coords:', status.get("reason"))
+        else:
+            print('[POST][INFO]', tile_dir.name, 'WCSFIX skipped: gaia_neighbourhood.csv missing/empty')
+    except Exception as e:
+        print('[POST][WARN]', tile_dir.name, 'WCSFIX error -> using raw coords:', e)
+
+    # 5) Apply filters/spikes on the chosen catalog (raw or wcsfix-augmented)
+    #    This writes catalogs/sextractor_pass2.filtered.csv (Astropy preserves extra columns if present).
+    filtered_csv = _apply_mnras_filters_and_spikes(tile_dir, sex_for_downstream, buckets)
+    sex_cols = _detect_radec_columns(filtered_csv) or ('ALPHA_J2000', 'DELTA_J2000')
+
+    # Early exit: nothing survived filtering
+    try:
+        if not filtered_csv.exists() or filtered_csv.stat().st_size == 0:
+            write_summary(tile_dir, finalize(buckets), md_path='MNRAS_SUMMARY.md', json_path='MNRAS_SUMMARY.json')
+            return
+    except Exception:
+        pass
+
+    # 6) Gaia xmatch (local)
     if gaia_csv.exists() and _csv_has_radec(gaia_csv):
         out_gaia = xdir / 'sex_gaia_xmatch.csv'
-        xmatch_sextractor_with_gaia(sex_csv, gaia_csv, out_gaia, radius_arcsec=radius_arcsec)
+        xmatch_sextractor_with_gaia(filtered_csv, gaia_csv, out_gaia, radius_arcsec=radius_arcsec)
         print('[POST]', tile_dir.name, 'Gaia xmatch ->', out_gaia)
-        # --- NEW: HPM filtering of Gaia matches ---
+
+        # Existing lightweight HPM cleaning kept (not the paper’s 180′ sweep)
         _filter_hpm_gaia(xdir, buckets)
+
+    # 7) PS1 xmatch (local)
     if ps1_csv.exists() and _csv_has_radec(ps1_csv):
         out_ps1 = xdir / 'sex_ps1_xmatch.csv'
-        xmatch_sextractor_with_ps1(sex_csv, ps1_csv, out_ps1, radius_arcsec=radius_arcsec)
+        xmatch_sextractor_with_ps1(filtered_csv, ps1_csv, out_ps1, radius_arcsec=radius_arcsec)
         print('[POST]', tile_dir.name, 'PS1 xmatch ->', out_ps1)
-    # USNO-B (optional)
+
+    # 8) USNO-B xmatch (local; now intended to be mandatory in intent-mode)
+    #    We keep the existing logic, but if missing, we record it in the summary buckets as an "incomplete tile".
+    usnob_missing = False
     try:
         if usnob_csv.exists() and _csv_has_radec(usnob_csv):
-            usnob_cols = _detect_radec_columns(usnob_csv) or ('RAJ2000','DEJ2000')
-            ra1, dec1 = sex_cols; ra2, dec2 = usnob_cols
+            usnob_cols = _detect_radec_columns(usnob_csv) or ('RAJ2000', 'DEJ2000')
+            ra1, dec1 = sex_cols
+            ra2, dec2 = usnob_cols
             out_usnob = xdir / 'sex_usnob_xmatch.csv'
             subprocess.run(
-                ['stilts','tskymatch2', f'in1={str(sex_csv)}', f'in2={str(usnob_csv)}',
+                ['stilts', 'tskymatch2',
+                 f'in1={str(filtered_csv)}', f'in2={str(usnob_csv)}',
                  f'ra1={ra1}', f'dec1={dec1}', f'ra2={ra2}', f'dec2={dec2}',
-                 f'error={radius_arcsec}', 'join=1and2', f'out={str(out_usnob)}', 'ofmt=csv'],
+                 f'error={radius_arcsec}', 'join=1and2',
+                 f'out={str(out_usnob)}', 'ofmt=csv'],
                 check=True
             )
             print('[POST]', tile_dir.name, 'USNO-B xmatch ->', out_usnob)
+        else:
+            usnob_missing = True
+            print('[POST][WARN]', tile_dir.name, 'USNO-B missing/invalid; tile marked incomplete for optical veto')
     except FileNotFoundError:
-        print('[POST][WARN]', tile_dir.name, 'STILTS not found; USNOB skipped')
-    # --- NEW: write MNRAS reproduction summary for this tile/run ---
+        usnob_missing = True
+        print('[POST][WARN]', tile_dir.name, 'STILTS not found; USNO-B skipped (tile incomplete)')
+    except Exception as e:
+        usnob_missing = True
+        print('[POST][WARN]', tile_dir.name, 'USNO-B xmatch failed (tile incomplete):', e)
+
+    # 9) Write per-tile summary
+    #    If USNO-B is missing, stash a note in buckets so the summary makes it visible.
+    if usnob_missing:
+        try:
+            buckets.setdefault('missing_inputs', 0)
+            buckets['missing_inputs'] += 1
+        except Exception:
+            pass
+
     write_summary(tile_dir, finalize(buckets), md_path='MNRAS_SUMMARY.md', json_path='MNRAS_SUMMARY.json')
 
 # --- CDS logging & helpers ---
