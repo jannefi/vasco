@@ -2,6 +2,8 @@
 
 VASCO can optionally run an early WCS correction (“WCSFIX”) step that fits a Gaia‑tied polynomial distortion model for each tile and writes a corrected catalog. The resulting corrected coordinates are stored as RA_corr/Dec_corr and are preferred downstream for crossmatching and within‑radius filtering.
 
+**Note** Use canonical coordinates is strongly recommended. They provide much better matching accuracy even at 2'-3' arcsec, and reduce the likelihood of false-matches
+
 **What it produces**
 
 When successful, per tile:
@@ -16,7 +18,8 @@ WCSFIX is only attempted when the following are true for the tile:
 
 1. SExtractor pass‑2 catalog exists (the pipeline ensures catalogs/sextractor_pass2.csv exists or re‑extracts it from pass2.ldac)
 2. A local Gaia neighbourhood cache exists and is non‑empty:
-catalogs/gaia_neighbourhood.csv (this is the key input used to tie the solution to Gaia). If it’s missing/empty, WCSFIX is skipped. Check the scripts folder for creating this cache
+catalogs/gaia_neighbourhood.csv (this is the key input used to tie the solution to Gaia). If it’s missing/empty, WCSFIX is skipped. 
+**Note** Check the scripts folder for creating the local cache: e.g. `prewarm_gaia_neighbourhood_bg.sh`, `prewarm_gaia_neighbourhood_cache.py` These are just reference implementations. You can find similar scripts for creating a local cache for PS1 and spikes' removal, see `derive_spike_cache_bg.sh`. Local caching usually requires a lot of disk space, but it will speed up many operations.
 3. Sufficient matchability: the fitter requires a minimum number of usable matches (controlled by VASCO_WCSFIX_MIN_MATCHES). If too few matches are available, the fit is skipped and recorded in wcsfix_status.json
 4. Tile center is resolvable (helps with RA wrap/stability): the pipeline tries to derive it from RUN_INDEX.json or from the tile folder name tile-RA…-DEC…
 
