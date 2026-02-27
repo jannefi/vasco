@@ -32,31 +32,45 @@ def _ensure_tool_cli(tool: str) -> None:
 def _validate_within5_arcsec_unit_tolerant(xmatch_csv: Path) -> Path:
     """
     Create a side-by-side CSV filtered to <=5 arcsec.
-    Handles angDist in arcsec or degrees, and falls back to RA/Dec-based computation.
-    Robust to empty/malformed input: writes an empty CSV with the same basename if needed.
+
+    Robust rules:
+      - Prefer distance columns if present: angDist or Separation
+        * If value > 0.1, treat as arcsec; else treat as degrees and convert to arcsec
+      - Else compute separation from coordinate columns:
+        * SExtractor side: RA_corr/Dec_corr, else ALPHAWIN_J2000/DELTAWIN_J2000, else ALPHA_J2000/DELTA_J2000
+        * Counterpart side: ra/dec, raMean/decMean, RA_ICRS/DE_ICRS, RAJ2000/DEJ2000, RA/DEC
+    Avoids STILTS CSV metadata inference issues by using streaming Python filtering.
+    Falls back to STILTS only to write empty placeholders if needed.
     """
     import csv
+    import math
+    import subprocess
+
     _ensure_tool_cli('stilts')
     xmatch_csv = Path(xmatch_csv)
     out = xmatch_csv.with_name(xmatch_csv.stem + '_within5arcsec.csv')
-    # If input is empty/zero bytes, write an empty CSV and return
+
+    # If input is missing or empty, write empty output
     try:
-        if xmatch_csv.stat().st_size == 0:
+        if not xmatch_csv.exists() or xmatch_csv.stat().st_size == 0:
             out.write_text('', encoding='utf-8')
             return out
-    except FileNotFoundError:
-        # Input doesn't exist -> produce empty output
-        out.write_text('', encoding='utf-8')
-        return out
-    # Try to read header safely
-    try:
-        with xmatch_csv.open(newline='') as f:
-            header = next(csv.reader(f), [])
     except Exception:
         out.write_text('', encoding='utf-8')
         return out
-    cols = set(header)
-    # Helper: write an empty output via stilts if possible, else python
+
+    # Read header
+    try:
+        with xmatch_csv.open(newline='', encoding='utf-8', errors='ignore') as f:
+            reader = csv.reader(f)
+            header = next(reader, [])
+    except Exception:
+        out.write_text('', encoding='utf-8')
+        return out
+
+    cols = [h.strip().lstrip('﻿') for h in header]
+    colset = set(cols)
+
     def _write_empty():
         try:
             subprocess.run(
@@ -67,44 +81,90 @@ def _validate_within5_arcsec_unit_tolerant(xmatch_csv: Path) -> Path:
         except Exception:
             out.write_text('', encoding='utf-8')
         return out
-    # Case A: an 'angDist' column present (arcsec or degrees)
-    if 'angDist' in cols:
-        # Try direct arcsec first
-        try:
-            subprocess.run(
-                ['stilts', 'tpipe', f'in={str(xmatch_csv)}', 'cmd=select angDist<=5',
-                 f'out={str(out)}', 'ofmt=csv'],
-                check=True
-            )
-            return out
-        except subprocess.CalledProcessError:
-            # Fallback: degrees -> convert to arcsec
-            try:
-                subprocess.run(
-                    ['stilts', 'tpipe', f'in={str(xmatch_csv)}',
-                     'cmd=select 3600*angDist<=5', f'out={str(out)}', 'ofmt=csv'],
-                    check=True
-                )
-                return out
-            except Exception:
+
+    # Helper: great-circle separation in arcsec
+    def _sep_arcsec(ra1_deg, dec1_deg, ra2_deg, dec2_deg) -> float:
+        ra1 = math.radians(ra1_deg); dec1 = math.radians(dec1_deg)
+        ra2 = math.radians(ra2_deg); dec2 = math.radians(dec2_deg)
+        s = 2 * math.asin(math.sqrt(
+            math.sin((dec2-dec1)/2)**2 +
+            math.cos(dec1)*math.cos(dec2)*math.sin((ra2-ra1)/2)**2
+        ))
+        return math.degrees(s) * 3600.0
+
+    # Prefer distance column if present
+    dist_col = None
+    for cand in ('angDist', 'Separation', 'sep_arcsec', 'sep'):
+        if cand in colset:
+            dist_col = cand
+            break
+
+    # Choose SExtractor and counterpart coordinate columns for fallback computation
+    sex_pairs = [('RA_corr','Dec_corr'),
+                 ('ALPHAWIN_J2000','DELTAWIN_J2000'),
+                 ('ALPHA_J2000','DELTA_J2000'),
+                 ('X_WORLD','Y_WORLD')]
+    cat_pairs = [('ra','dec'),
+                 ('raMean','decMean'),
+                 ('RAMean','DecMean'),
+                 ('RA_ICRS','DE_ICRS'),
+                 ('RAJ2000','DEJ2000'),
+                 ('RA','DEC')]
+
+    sex_ra = sex_dec = None
+    for a,b in sex_pairs:
+        if a in colset and b in colset:
+            sex_ra, sex_dec = a,b
+            break
+
+    cat_ra = cat_dec = None
+    for a,b in cat_pairs:
+        if a in colset and b in colset:
+            cat_ra, cat_dec = a,b
+            break
+
+    # Stream-filter using Python (most robust)
+    try:
+        with xmatch_csv.open(newline='', encoding='utf-8', errors='ignore') as fi, \
+             out.open('w', newline='', encoding='utf-8') as fo:
+            rdr = csv.DictReader(fi)
+            if not rdr.fieldnames:
                 return _write_empty()
-    # Case B: derive separation from RA/Dec columns
-    for a,b in [('ra','dec'), ('RAJ2000','DEJ2000'), ('RA_ICRS','DE_ICRS'), ('RA','DEC')]:
-        if a in cols and b in cols:
-            cmd = ("cmd=addcol angDist_arcsec "
-                   f"3600*skyDistanceDegrees(ALPHA_J2000,DELTA_J2000,{a},{b}); "
-                   "select angDist_arcsec<=5")
-            try:
-                subprocess.run(
-                    ['stilts','tpipe', f'in={str(xmatch_csv)}', cmd,
-                     f'out={str(out)}', 'ofmt=csv'],
-                    check=True
-                )
-                return out
-            except Exception:
-                return _write_empty()
-    # No usable columns -> produce empty output
-    return _write_empty()
+            w = csv.DictWriter(fo, fieldnames=rdr.fieldnames)
+            w.writeheader()
+
+            kept = 0
+            for row in rdr:
+                try:
+                    # Path 1: distance column
+                    if dist_col:
+                        d = float(row.get(dist_col, 'nan'))
+                        # heuristic: if small, it may be degrees; otherwise arcsec
+                        d_arcsec = d if d > 0.1 else d * 3600.0
+                    else:
+                        # Path 2: compute from coords
+                        if not (sex_ra and cat_ra):
+                            continue
+                        ra1 = float(row.get(sex_ra, 'nan'))
+                        dec1 = float(row.get(sex_dec, 'nan'))
+                        ra2 = float(row.get(cat_ra, 'nan'))
+                        dec2 = float(row.get(cat_dec, 'nan'))
+                        if any(map(lambda x: isinstance(x, float) and math.isnan(x), [ra1,dec1,ra2,dec2])):
+                            continue
+                        d_arcsec = _sep_arcsec(ra1, dec1, ra2, dec2)
+
+                    if d_arcsec <= 5.0:
+                        w.writerow(row)
+                        kept += 1
+                except Exception:
+                    continue
+
+        # If we wrote only header, that's still a valid output (0 matches), so return it.
+        return out
+
+    except Exception:
+        # Last resort fallback: placeholder empty
+        return _write_empty()
 
 # --- POSSI-E enforcement & header export ---
 def _fits_survey(path: Path) -> str:
