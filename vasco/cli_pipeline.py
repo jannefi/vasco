@@ -3,6 +3,20 @@ from __future__ import annotations
 import argparse, json, time, subprocess, os, shutil, math
 from pathlib import Path
 from typing import List, Tuple
+import warnings
+
+# Silence pyerfa/ERFA warnings that clutter runs (must run before importing astropy/erfa)
+warnings.filterwarnings(
+    "ignore",
+    message=r'ERFA function ".*" yielded .*dubious year.*',
+    module=r"erfa\.core",
+)
+warnings.filterwarnings(
+    "ignore",
+    message=r'ERFA function ".*" yielded .*distance overridden.*',
+    module=r"erfa\.core",
+)
+
 from . import downloader as dl
 from .exporter3 import export_and_summarize
 from .utils.coords import parse_ra as _parse_ra, parse_dec as _parse_dec
@@ -23,6 +37,8 @@ from vasco.mnras.buckets import init_buckets, finalize
 from vasco.mnras.report import write_summary
 import csv as _csv
 from vasco.wcsfix_early import ensure_wcsfix_catalog, WcsFixConfig
+
+
 
 # --- helpers ---
 def _ensure_tool_cli(tool: str) -> None:
@@ -822,13 +838,14 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> No
             ra1, dec1 = sex_cols
             ra2, dec2 = usnob_cols
             out_usnob = xdir / 'sex_usnob_xmatch.csv'
+            quiet = not bool(os.getenv("VASCO_VERBOSE_STILTS", "").strip())
             subprocess.run(
                 ['stilts', 'tskymatch2',
                  f'in1={str(filtered_csv)}', f'in2={str(usnob_csv)}',
                  f'ra1={ra1}', f'dec1={dec1}', f'ra2={ra2}', f'dec2={dec2}',
                  f'error={radius_arcsec}', 'join=1and2',
                  f'out={str(out_usnob)}', 'ofmt=csv'],
-                check=True
+                check=True, stdout=None if not quiet else subprocess.DEVNULL, stderr=None if not quiet else subprocess.DEVNULL
             )
             print('[POST]', tile_dir.name, 'USNO-B xmatch ->', out_usnob)
         else:
