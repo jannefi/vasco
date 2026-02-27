@@ -426,8 +426,9 @@ def ensure_wcsfix_catalog(tile_dir: Path,
                 dde = (dec_det_row - dec0)
 
                 X = _poly_features(np.array([dra], dtype=float), np.array([dde], dtype=float), degree=cfg.degree)
-                off_ra = float(X @ coef_ra)
-                off_de = float(X @ coef_de)
+                off_ra = (X @ coef_ra).item()
+                off_de = (X @ coef_de).item()
+
 
                 ra_corr = _wrap_deg_0_360(ra_det_row + off_ra)
                 dec_corr = dec_det_row + off_de
