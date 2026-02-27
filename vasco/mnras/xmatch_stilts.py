@@ -1,15 +1,12 @@
-
 from __future__ import annotations
 from pathlib import Path
 from typing import Optional, Tuple, Iterable
 import csv
-
 from vasco.utils.stilts_wrapper import stilts_xmatch
 
 # ---------------------------------------------------------------------
 # Generic RA/Dec detector for any CSV table (external catalogs)
 # ---------------------------------------------------------------------
-
 def _guess_radec_any(csv_path, preference=("ra","dec")) -> Tuple[str, str]:
     import csv as _csv
     from pathlib import Path as _Path
@@ -29,9 +26,11 @@ def _guess_radec_any(csv_path, preference=("ra","dec")) -> Tuple[str, str]:
     raise ValueError(f'RA/Dec not found in {csv_path}; header={hdr[:12]}')
 
 # SExtractor candidates
+# NOTE: We prefer canonical WCS-fixed coordinates when present.
 _SEX_CANDIDATES: Iterable[Tuple[str,str]] = (
-    ("ALPHA_J2000", "DELTA_J2000"),
-    ("ALPHAWIN_J2000", "DELTAWIN_J2000"),
+    ("RA_corr", "Dec_corr"),                 # NEW: canonical coords (preferred)
+    ("ALPHAWIN_J2000", "DELTAWIN_J2000"),    # windowed sky coords
+    ("ALPHA_J2000", "DELTA_J2000"),          # raw sky coords
     ("X_WORLD", "Y_WORLD"),
     ("ra", "dec"),
     ("RA", "DEC"),
@@ -57,7 +56,6 @@ def _guess_sextractor_radec(csv_path: Path | str) -> Tuple[str,str]:
     )
 
 # Wrapper around STILTS call
-
 def xmatch_catalogs_stilts(
     table1: Path | str,
     table2: Path | str,
@@ -83,7 +81,6 @@ def xmatch_catalogs_stilts(
     return Path(out)
 
 # Gaia fallback (Astropy) with numeric coercion
-
 def _gaia_fallback_match(sex_catalog_csv: Path | str,
                          gaia_catalog_csv: Path | str,
                          out_csv: Path | str,
@@ -92,7 +89,6 @@ def _gaia_fallback_match(sex_catalog_csv: Path | str,
     import pandas as pd
     from astropy.coordinates import SkyCoord
     import astropy.units as u
-
     sex_p = Path(sex_catalog_csv)
     gaia_p = Path(gaia_catalog_csv)
     out_p = Path(out_csv)
@@ -103,6 +99,7 @@ def _gaia_fallback_match(sex_catalog_csv: Path | str,
 
     # SExtractor columns (preference order)
     pref1 = [
+        ('RA_corr','Dec_corr'),
         ('ALPHAWIN_J2000','DELTAWIN_J2000'),
         ('ALPHA_J2000','DELTA_J2000'),
         ('X_WORLD','Y_WORLD'),
@@ -125,33 +122,30 @@ def _gaia_fallback_match(sex_catalog_csv: Path | str,
         raise RuntimeError('Fallback: cannot find RA/Dec in Gaia CSV')
 
     # Coerce to numeric (drop any non-numeric rows)
-    import pandas as pd
-    df1['_ra']  = pd.to_numeric(df1[ra1], errors='coerce')
+    df1['_ra'] = pd.to_numeric(df1[ra1], errors='coerce')
     df1['_dec'] = pd.to_numeric(df1[dec1], errors='coerce')
-    df2['_ra']  = pd.to_numeric(df2[ra2], errors='coerce')
+    df2['_ra'] = pd.to_numeric(df2[ra2], errors='coerce')
     df2['_dec'] = pd.to_numeric(df2[dec2], errors='coerce')
+
     df1v = df1.dropna(subset=['_ra','_dec']).reset_index(drop=True)
     df2v = df2.dropna(subset=['_ra','_dec']).reset_index(drop=True)
 
     c1 = SkyCoord(df1v['_ra'].to_numpy()*u.deg, df1v['_dec'].to_numpy()*u.deg)
     c2 = SkyCoord(df2v['_ra'].to_numpy()*u.deg, df2v['_dec'].to_numpy()*u.deg)
-
     idx1, idx2, sep2d, _ = c2.search_around_sky(c1, radius_arcsec*u.arcsec)
+
     matched = (df1v.iloc[idx2].reset_index(drop=True)
                .join(df2v.iloc[idx1].reset_index(drop=True), lsuffix='_sex', rsuffix='_gaia'))
     matched['sep_arcsec'] = sep2d.arcsec
     matched.to_csv(out_p, index=False)
     return out_p
 
-
-def xmatch_sextractor_with_gaia(
-    sex_catalog_csv: Path | str,
-    gaia_catalog_csv: Path | str,
-    out_csv: Path | str,
-    *,
-    radius_arcsec: float = 2.0,
-    join_type: str = '1and2',
-) -> Path:
+def xmatch_sextractor_with_gaia(sex_catalog_csv: Path | str,
+                                gaia_catalog_csv: Path | str,
+                                out_csv: Path | str,
+                                *,
+                                radius_arcsec: float = 2.0,
+                                join_type: str = '1and2') -> Path:
     ra1, dec1 = _guess_sextractor_radec(sex_catalog_csv)
     try:
         ra2, dec2 = _guess_radec_any(gaia_catalog_csv, preference=("ra","dec"))
@@ -173,15 +167,12 @@ def xmatch_sextractor_with_gaia(
         return _gaia_fallback_match(sex_catalog_csv, gaia_catalog_csv, out_csv,
                                     radius_arcsec=radius_arcsec)
 
-
-def xmatch_sextractor_with_ps1(
-    sex_catalog_csv: Path | str,
-    ps1_catalog_csv: Path | str,
-    out_csv: Path | str,
-    *,
-    radius_arcsec: float = 2.0,
-    join_type: str = '1and2',
-) -> Path:
+def xmatch_sextractor_with_ps1(sex_catalog_csv: Path | str,
+                               ps1_catalog_csv: Path | str,
+                               out_csv: Path | str,
+                               *,
+                               radius_arcsec: float = 2.0,
+                               join_type: str = '1and2') -> Path:
     ra1, dec1 = _guess_sextractor_radec(sex_catalog_csv)
     ra2, dec2 = _guess_radec_any(ps1_catalog_csv, preference=("ra","dec"))
     return xmatch_catalogs_stilts(
