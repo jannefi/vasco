@@ -1011,12 +1011,26 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> No
     # 3) Early canonical coordinates (WCSFIX) using local Gaia cache
     sex_for_veto = sex_csv
     try:
+        import html as _html
+
         center = _tile_center_from_index_or_name(tile_dir)
+
+        # Primary config (existing behavior; env-controlled)
         cfg = WcsFixConfig(
             bootstrap_radius_arcsec=float(os.getenv('VASCO_WCSFIX_BOOTSTRAP_ARCSEC', '5.0')),
             degree=int(os.getenv('VASCO_WCSFIX_DEGREE', '2')),
             min_matches=int(os.getenv('VASCO_WCSFIX_MIN_MATCHES', '20')),
         )
+
+        # Optional fallback config (second-chance) for the specific failure mode:
+        # "too few tie points (x < min_matches)"
+        fallback_enabled = os.getenv('VASCO_WCSFIX_FALLBACK', '1').strip().lower() not in ('0', 'false', 'no')
+        cfg_fb = WcsFixConfig(
+            bootstrap_radius_arcsec=float(os.getenv('VASCO_WCSFIX_FALLBACK_BOOTSTRAP_ARCSEC', '15.0')),
+            degree=int(os.getenv('VASCO_WCSFIX_FALLBACK_DEGREE', '1')),
+            min_matches=int(os.getenv('VASCO_WCSFIX_FALLBACK_MIN_MATCHES', '10')),
+        )
+
         if gaia_csv.exists() and gaia_csv.stat().st_size > 0:
             out_wcs, status = ensure_wcsfix_catalog(
                 tile_dir,
@@ -1026,11 +1040,37 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> No
                 cfg=cfg,
                 force=bool(os.getenv('VASCO_WCSFIX_FORCE', '').strip()),
             )
+
             if status.get('ok'):
                 sex_for_veto = out_wcs
                 print('[POST]', tile_dir.name, 'WCSFIX OK ->', out_wcs.name)
             else:
-                print('[POST][INFO]', tile_dir.name, 'WCSFIX skipped/failed -> using raw coords:', status.get('reason'))
+                reason = status.get('reason') or ''
+                reason_norm = _html.unescape(str(reason)).lower()
+                print('[POST][INFO]', tile_dir.name, 'WCSFIX skipped/failed -> using raw coords:', reason)
+
+                # Second-chance retry: only for the known failure mode
+                if fallback_enabled and ('too few tie points' in reason_norm):
+                    print('[POST][INFO]', tile_dir.name,
+                        f'WCSFIX fallback retry: bootstrap={cfg_fb.bootstrap_radius_arcsec}" '
+                        f'min_matches={cfg_fb.min_matches} degree={cfg_fb.degree}')
+
+                    out_wcs2, status2 = ensure_wcsfix_catalog(
+                        tile_dir,
+                        sex_csv,
+                        gaia_csv,
+                        center=center,
+                        cfg=cfg_fb,
+                        # If user explicitly set FORCE, honor it; otherwise do not force unnecessarily.
+                        force=bool(os.getenv('VASCO_WCSFIX_FORCE', '').strip()),
+                    )
+
+                    if status2.get('ok'):
+                        sex_for_veto = out_wcs2
+                        print('[POST]', tile_dir.name, 'WCSFIX OK (fallback) ->', out_wcs2.name)
+                    else:
+                        print('[POST][INFO]', tile_dir.name,
+                            'WCSFIX fallback failed -> using raw coords:', status2.get('reason'))
         else:
             print('[POST][INFO]', tile_dir.name, 'WCSFIX skipped: gaia_neighbourhood.csv missing/empty')
     except Exception as e:
