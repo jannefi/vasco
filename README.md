@@ -28,6 +28,18 @@ This is the first breaking change after the previous announcement. More major ch
 
 Please see [WCS FIX](WCSFIX.md)
 
+## Major changes (28-Feb-2026)
+
+- Step4 refactor: “veto-first” optical counterpart gating. The pipeline now applies the optical veto in the intended sequence: eliminate Gaia matches first, then eliminate Pan‑STARRS matches on the Gaia‑unmatched set, and finally eliminate USNO matches on the PS1‑unmatched set, before applying morphology/spike filters as a late stage
+- Early WCSFIX coordinates adopted for crossmatching
+- New per-tile carry-forward artifacts for the veto funnel. Step4 now writes explicit carry-forward CSVs capturing the unmatched remainder after each veto stage:
+  - sextractor_pass2.after_gaia_veto.csv
+  - sextractor_pass2.after_ps1_veto.csv
+  - sextractor_pass2.after_usnob_veto.csv (optical-veto survivors)
+and then writes the late-stage survivor set to sextractor_pass2.filtered.csv
+- "CSV first" decision for post-pipeline “shrinking set” fetchers. There is no need to create or maintain master optical parquet, because the survivor dataset is much smaller
+- ZTF over PTF decision: ZTF is a successor of PTF since 2017. I'm trying to use ZTF-only
+
 ---
 
 ## Table of Contents
