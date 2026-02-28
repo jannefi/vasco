@@ -25,6 +25,8 @@ from vasco.external_fetch_online import (fetch_gaia_neighbourhood, fetch_ps1_nei
 from vasco.external_fetch_usnob_vizier import fetch_usnob_neighbourhood
 from vasco.mnras.xmatch_stilts import (xmatch_sextractor_with_gaia, xmatch_sextractor_with_ps1)
 from vasco.utils.cdsskymatch import cdsskymatch
+from vasco.utils.stilts_wrapper import stilts_xmatch
+
 # --- NEW imports for MNRAS modules (filters, spikes, HPM, buckets/report) ---
 from astropy.table import Table
 from vasco.mnras.filters_mnras import apply_extract_filters, apply_morphology_filters
@@ -625,10 +627,11 @@ def _csv_has_radec(csv_path: Path) -> bool:
         with open(csv_path, newline='') as f:
             hdr = next(csv.reader(f))
         cols = {h.strip() for h in hdr}
-        for a,b in [('ra','dec'), ('RA_ICRS','DE_ICRS'), ('RAJ2000','DEJ2000'),
-                    ('RA','DEC'), ('lon','lat'), ('raMean','decMean'), ('RAMean','DecMean'),
-                    ('ALPHA_J2000','DELTA_J2000'), ('ALPHAWIN_J2000','DELTAWIN_J2000'),
-                    ('X_WORLD','Y_WORLD')]:
+        for a,b in [('RA_corr','Dec_corr'), ('RA_corr','DEC_corr'),
+                ('ra','dec'), ('RA_ICRS','DE_ICRS'), ('RAJ2000','DEJ2000'),
+                ('RA','DEC'), ('lon','lat'), ('raMean','decMean'), ('RAMean','DecMean'),
+                ('ALPHA_J2000','DELTA_J2000'), ('ALPHAWIN_J2000','DELTAWIN_J2000'),
+                ('X_WORLD','Y_WORLD')]:
             if a in cols and b in cols:
                 return True
         return False
@@ -641,9 +644,10 @@ def _detect_radec_columns(csv_path: Path) -> Tuple[str, str] | None:
         with open(csv_path, newline='') as f:
             hdr = next(csv.reader(f))
         cols = [h.strip() for h in hdr]
-        pairs = [('ALPHA_J2000','DELTA_J2000'), ('ALPHAWIN_J2000','DELTAWIN_J2000'),
-                 ('X_WORLD','Y_WORLD'), ('RAJ2000','DEJ2000'), ('RA_ICRS','DE_ICRS'),
-                 ('ra','dec'), ('RA','DEC')]
+        pairs = [('RA_corr','Dec_corr'), ('RA_corr','DEC_corr'),
+             ('ALPHA_J2000','DELTA_J2000'), ('ALPHAWIN_J2000','DELTAWIN_J2000'),
+             ('X_WORLD','Y_WORLD'), ('RAJ2000','DEJ2000'), ('RA_ICRS','DE_ICRS'),
+             ('ra','dec'), ('RA','DEC')]
         for a,b in pairs:
             if a in cols and b in cols:
                 return a,b
@@ -744,43 +748,51 @@ def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
     return sex_csv
 
 
-def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> None:
-    """
-    Step4 (local backend): prepare catalogs, apply (current) MNRAS-ish filters/spike logic,
-    then xmatch against Gaia/PS1/USNO.
 
-    Updated behavior:
-      - Ensures early WCSFIX canonical coordinates (RA_corr/Dec_corr) using local Gaia cache
-        by generating catalogs/sextractor_pass2.wcsfix.csv and using it downstream.
-      - Xmatch will automatically prefer RA_corr/Dec_corr if xmatch_stilts.py is updated to include them.
-      - If WCSFIX cannot be fit, pipeline proceeds with raw coords and writes wcsfix_status.json.
+
+def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> None:
+    """    Step4 (LOCAL backend) — veto-first ordering (Step4a/Step4b).
+
+    Step4a (optical veto, elimination semantics):
+      - Gaia veto: write xmatch/sex_gaia_xmatch.csv (matched pairs) and
+        catalogs/sextractor_pass2.after_gaia_veto.csv (carry-forward unmatched)
+      - PS1 veto on Gaia-unmatched: write xmatch/sex_ps1_xmatch.csv and
+        catalogs/sextractor_pass2.after_ps1_veto.csv
+      - USNO-B veto on PS1-unmatched: write xmatch/sex_usnob_xmatch.csv and
+        catalogs/sextractor_pass2.after_usnob_veto.csv
+
+    Step4b (late filters):
+      - Apply extract/morphology filters + spike cuts on the post-veto remainder.
+
+    Notes:
+      - Prefers WCSFIX RA_corr/Dec_corr when available.
+      - Keeps output filenames sex_*_xmatch.csv so Step5 can generate *_within5arcsec.csv.
+      - USNO-B remains optional (if cache missing/invalid, veto is skipped and remainder carries forward).
     """
     tile_dir = Path(tile_dir)
     xdir = tile_dir / 'xmatch'
     xdir.mkdir(parents=True, exist_ok=True)
+    catdir = tile_dir / 'catalogs'
+    catdir.mkdir(parents=True, exist_ok=True)
 
-    # 1) Ensure base SExtractor CSV exists (big)
+    # 1) Ensure base SExtractor CSV exists
     sex_csv = _ensure_sextractor_csv(tile_dir, pass2_ldac)
 
-    # 2) Apply MNRAS filters & spikes before any xmatch (current behavior kept)
+    # 2) Neighbourhood caches (fetch stage happens before this in cmd_step4_xmatch)
+    gaia_csv = catdir / 'gaia_neighbourhood.csv'
+    ps1_csv = catdir / 'ps1_neighbourhood.csv'
+    usnob_csv = catdir / 'usnob_neighbourhood.csv'
+
     buckets = init_buckets()
 
-    # 3) Ensure Gaia/PS1/USNO neighbourhood caches are present (fetch stage happens before this in cmd_step4_xmatch)
-    gaia_csv = tile_dir / 'catalogs' / 'gaia_neighbourhood.csv'
-    ps1_csv = tile_dir / 'catalogs' / 'ps1_neighbourhood.csv'
-    usnob_csv = tile_dir / 'catalogs' / 'usnob_neighbourhood.csv'
-
-    # 4) Early canonical coordinates (WCSFIX) using local Gaia cache
-    #    - Write catalogs/sextractor_pass2.wcsfix.csv (adds RA_corr/Dec_corr)
-    #    - If fails, continue with raw sex_csv; status is written to catalogs/wcsfix_status.json
-    sex_for_downstream = sex_csv
+    # 3) Early canonical coordinates (WCSFIX) using local Gaia cache
+    sex_for_veto = sex_csv
     try:
-        # Try to provide the tile center if we can (improves RA wrap behavior and stability)
         center = _tile_center_from_index_or_name(tile_dir)
         cfg = WcsFixConfig(
-            bootstrap_radius_arcsec=float(os.getenv("VASCO_WCSFIX_BOOTSTRAP_ARCSEC", "5.0")),
-            degree=int(os.getenv("VASCO_WCSFIX_DEGREE", "2")),
-            min_matches=int(os.getenv("VASCO_WCSFIX_MIN_MATCHES", "20")),
+            bootstrap_radius_arcsec=float(os.getenv('VASCO_WCSFIX_BOOTSTRAP_ARCSEC', '5.0')),
+            degree=int(os.getenv('VASCO_WCSFIX_DEGREE', '2')),
+            min_matches=int(os.getenv('VASCO_WCSFIX_MIN_MATCHES', '20')),
         )
         if gaia_csv.exists() and gaia_csv.stat().st_size > 0:
             out_wcs, status = ensure_wcsfix_catalog(
@@ -789,83 +801,109 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> No
                 gaia_csv,
                 center=center,
                 cfg=cfg,
-                force=bool(os.getenv("VASCO_WCSFIX_FORCE", "").strip()),
+                force=bool(os.getenv('VASCO_WCSFIX_FORCE', '').strip()),
             )
-            if status.get("ok"):
-                sex_for_downstream = out_wcs
+            if status.get('ok'):
+                sex_for_veto = out_wcs
                 print('[POST]', tile_dir.name, 'WCSFIX OK ->', out_wcs.name)
             else:
-                print('[POST][INFO]', tile_dir.name, 'WCSFIX skipped/failed -> using raw coords:', status.get("reason"))
+                print('[POST][INFO]', tile_dir.name, 'WCSFIX skipped/failed -> using raw coords:', status.get('reason'))
         else:
             print('[POST][INFO]', tile_dir.name, 'WCSFIX skipped: gaia_neighbourhood.csv missing/empty')
     except Exception as e:
         print('[POST][WARN]', tile_dir.name, 'WCSFIX error -> using raw coords:', e)
 
-    # 5) Apply filters/spikes on the chosen catalog (raw or wcsfix-augmented)
-    #    This writes catalogs/sextractor_pass2.filtered.csv (Astropy preserves extra columns if present).
-    filtered_csv = _apply_mnras_filters_and_spikes(tile_dir, sex_for_downstream, buckets)
-    sex_cols = _detect_radec_columns(filtered_csv) or ('ALPHA_J2000', 'DELTA_J2000')
+    # Candidate RA/Dec columns (prefer RA_corr/Dec_corr when present)
+    cand_cols = _detect_radec_columns(sex_for_veto) or ('ALPHA_J2000', 'DELTA_J2000')
+    ra1, dec1 = cand_cols
 
-    # Early exit: nothing survived filtering
+    def _copy_or_empty(src: Path, dst: Path) -> None:
+        try:
+            if src.exists() and src.stat().st_size > 0:
+                shutil.copyfile(src, dst)
+            else:
+                dst.write_text('', encoding='utf-8')
+        except Exception:
+            try:
+                dst.write_text('', encoding='utf-8')
+            except Exception:
+                pass
+
+    def _veto(stage: str, in_candidates: Path, catalog: Path, out_match: Path, out_unmatched: Path,
+              default_cat_cols: tuple[str, str], disable_env: str | None = None) -> bool:
+        if disable_env and os.getenv(disable_env):
+            print('[POST][INFO]', tile_dir.name, f'{stage} disabled by env ({disable_env}) -> skipping veto')
+            _copy_or_empty(in_candidates, out_unmatched)
+            return False
+        if not (catalog.exists() and _csv_has_radec(catalog)):
+            print('[POST][WARN]', tile_dir.name, f'{stage} cache missing/invalid -> skipping veto; carry-forward unchanged')
+            buckets.setdefault('missing_inputs', 0)
+            buckets['missing_inputs'] += 1
+            _copy_or_empty(in_candidates, out_unmatched)
+            return False
+
+        cat_cols = _detect_radec_columns(catalog) or default_cat_cols
+        ra2, dec2 = cat_cols
+
+        # Matched pairs
+        stilts_xmatch(
+            str(in_candidates), str(catalog), str(out_match),
+            ra1=ra1, dec1=dec1, ra2=ra2, dec2=dec2,
+            radius_arcsec=radius_arcsec,
+            join_type='1and2',
+            ofmt='csv',
+        )
+
+        # Carry-forward unmatched
+        stilts_xmatch(
+            str(in_candidates), str(catalog), str(out_unmatched),
+            ra1=ra1, dec1=dec1, ra2=ra2, dec2=dec2,
+            radius_arcsec=radius_arcsec,
+            join_type='1not2',
+            ofmt='csv',
+        )
+
+        print('[POST]', tile_dir.name, f'{stage} veto ->', out_match)
+        return True
+
+    # Step4a outputs
+    after_gaia = catdir / 'sextractor_pass2.after_gaia_veto.csv'
+    after_ps1 = catdir / 'sextractor_pass2.after_ps1_veto.csv'
+    after_usnob = catdir / 'sextractor_pass2.after_usnob_veto.csv'
+
+    out_gaia = xdir / 'sex_gaia_xmatch.csv'
+    out_ps1 = xdir / 'sex_ps1_xmatch.csv'
+    out_usnob = xdir / 'sex_usnob_xmatch.csv'
+
+    # Gaia veto first
+    _veto('Gaia', sex_for_veto, gaia_csv, out_gaia, after_gaia, default_cat_cols=('ra', 'dec'))
+
+    # PS1 veto on Gaia-unmatched
+    _veto('PS1', after_gaia, ps1_csv, out_ps1, after_ps1, default_cat_cols=('raMean', 'decMean'), disable_env='VASCO_DISABLE_PS1')
+
+    # USNO-B veto on PS1-unmatched
+    usno_ok = _veto('USNO-B', after_ps1, usnob_csv, out_usnob, after_usnob, default_cat_cols=('RAJ2000', 'DEJ2000'), disable_env='VASCO_DISABLE_USNOB')
+    if not usno_ok:
+        buckets.setdefault('usnob_veto_skipped', 0)
+        buckets['usnob_veto_skipped'] += 1
+
+    # Step4b: late filters/spikes on the post-veto remainder
+    remainder = after_usnob
     try:
-        if not filtered_csv.exists() or filtered_csv.stat().st_size == 0:
+        if (not remainder.exists()) or remainder.stat().st_size == 0:
             write_summary(tile_dir, finalize(buckets), md_path='MNRAS_SUMMARY.md', json_path='MNRAS_SUMMARY.json')
             return
     except Exception:
-        pass
+        write_summary(tile_dir, finalize(buckets), md_path='MNRAS_SUMMARY.md', json_path='MNRAS_SUMMARY.json')
+        return
 
-    # 6) Gaia xmatch (local)
-    if gaia_csv.exists() and _csv_has_radec(gaia_csv):
-        out_gaia = xdir / 'sex_gaia_xmatch.csv'
-        xmatch_sextractor_with_gaia(filtered_csv, gaia_csv, out_gaia, radius_arcsec=radius_arcsec)
-        print('[POST]', tile_dir.name, 'Gaia xmatch ->', out_gaia)
+    _apply_mnras_filters_and_spikes(tile_dir, remainder, buckets)
 
-        # Existing lightweight HPM cleaning kept (not the paper’s 180′ sweep)
-        _filter_hpm_gaia(xdir, buckets)
-
-    # 7) PS1 xmatch (local)
-    if ps1_csv.exists() and _csv_has_radec(ps1_csv):
-        out_ps1 = xdir / 'sex_ps1_xmatch.csv'
-        xmatch_sextractor_with_ps1(filtered_csv, ps1_csv, out_ps1, radius_arcsec=radius_arcsec)
-        print('[POST]', tile_dir.name, 'PS1 xmatch ->', out_ps1)
-
-    # 8) USNO-B xmatch (local; now intended to be mandatory in intent-mode)
-    #    We keep the existing logic, but if missing, we record it in the summary buckets as an "incomplete tile".
-    usnob_missing = False
+    # Keep HPM late and conservative (flagging only)
     try:
-        if usnob_csv.exists() and _csv_has_radec(usnob_csv):
-            usnob_cols = _detect_radec_columns(usnob_csv) or ('RAJ2000', 'DEJ2000')
-            ra1, dec1 = sex_cols
-            ra2, dec2 = usnob_cols
-            out_usnob = xdir / 'sex_usnob_xmatch.csv'
-            quiet = not bool(os.getenv("VASCO_VERBOSE_STILTS", "").strip())
-            subprocess.run(
-                ['stilts', 'tskymatch2',
-                 f'in1={str(filtered_csv)}', f'in2={str(usnob_csv)}',
-                 f'ra1={ra1}', f'dec1={dec1}', f'ra2={ra2}', f'dec2={dec2}',
-                 f'error={radius_arcsec}', 'join=1and2',
-                 f'out={str(out_usnob)}', 'ofmt=csv'],
-                check=True, stdout=None if not quiet else subprocess.DEVNULL, stderr=None if not quiet else subprocess.DEVNULL
-            )
-            print('[POST]', tile_dir.name, 'USNO-B xmatch ->', out_usnob)
-        else:
-            usnob_missing = True
-            print('[POST][WARN]', tile_dir.name, 'USNO-B missing/invalid; tile marked incomplete for optical veto')
-    except FileNotFoundError:
-        usnob_missing = True
-        print('[POST][WARN]', tile_dir.name, 'STILTS not found; USNO-B skipped (tile incomplete)')
-    except Exception as e:
-        usnob_missing = True
-        print('[POST][WARN]', tile_dir.name, 'USNO-B xmatch failed (tile incomplete):', e)
-
-    # 9) Write per-tile summary
-    #    If USNO-B is missing, stash a note in buckets so the summary makes it visible.
-    if usnob_missing:
-        try:
-            buckets.setdefault('missing_inputs', 0)
-            buckets['missing_inputs'] += 1
-        except Exception:
-            pass
+        _filter_hpm_gaia(xdir, buckets)
+    except Exception:
+        pass
 
     write_summary(tile_dir, finalize(buckets), md_path='MNRAS_SUMMARY.md', json_path='MNRAS_SUMMARY.json')
 
