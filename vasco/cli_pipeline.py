@@ -280,6 +280,196 @@ def _write_bright_cache(path: Path, bright):
         for b in bright:
             w.writerow({'ra': b.ra, 'dec': b.dec, 'rmag': b.rmag})
 
+# --- NEW: reporting helpers for veto-first Step4a/4b ---
+
+def _csv_data_rows(path: Path) -> int:
+    """Return number of data rows (excluding header) for a CSV file; 0 if missing/empty; -1 if unreadable."""
+    try:
+        p = Path(path)
+        if not p.exists() or p.stat().st_size == 0:
+            return 0
+        with p.open('r', newline='', encoding='utf-8', errors='ignore') as f:
+            n = sum(1 for _ in f)
+        return max(0, n - 1)
+    except Exception:
+        return -1
+
+
+def _augment_summary_json(tile_dir: Path, extra: dict) -> None:
+    """Merge extra fields into <tile>/MNRAS_SUMMARY.json if it exists (best-effort)."""
+    try:
+        tile_dir = Path(tile_dir)
+        p = tile_dir / 'MNRAS_SUMMARY.json'
+        if not p.exists() or p.stat().st_size == 0:
+            return
+        base = json.loads(p.read_text(encoding='utf-8'))
+        if not isinstance(base, dict):
+            return
+        base.update(extra)
+        p.write_text(json.dumps(base, indent=2), encoding='utf-8')
+    except Exception:
+        return
+
+
+def _analyze_rejection_reasons(
+    src_csv: Path,
+    out_rej_extract: Path,
+    out_rej_morph: Path,
+) -> dict:
+    """
+    Analyze remainder rows against hard extract/morphology gates and write rejection CSVs.
+
+    This does NOT attempt to reproduce optional sigma-clipping behavior. It reports only hard gates:
+      - extract: FLAGS==0, SNR_WIN>=30
+      - morphology: SPREAD_MODEL > -0.002, 2 < FWHM_IMAGE < 7, ELONGATION < 1.3,
+        plus pixel-extent guards when XMIN/XMAX/YMIN/YMAX columns exist.
+
+    Returns a dict of counts (per reason) suitable for merging into MNRAS_SUMMARY.json.
+    """
+    import csv
+
+    src_csv = Path(src_csv)
+    out_rej_extract = Path(out_rej_extract)
+    out_rej_morph = Path(out_rej_morph)
+
+    counts = {
+        'late_reject_flags': 0,
+        'late_reject_snr': 0,
+        'late_reject_spread_model': 0,
+        'late_reject_fwhm': 0,
+        'late_reject_elongation': 0,
+        'late_reject_extent_delta': 0,
+        'late_reject_extent_min': 0,
+        'late_kept_hard_gates': 0,
+    }
+
+    if (not src_csv.exists()) or src_csv.stat().st_size == 0:
+        out_rej_extract.write_text('', encoding='utf-8')
+        out_rej_morph.write_text('', encoding='utf-8')
+        return counts
+
+    with src_csv.open(newline='', encoding='utf-8', errors='ignore') as f:
+        r = csv.DictReader(f)
+        rows = list(r)
+        fieldnames = (r.fieldnames or [])
+
+    if not fieldnames:
+        out_rej_extract.write_text('', encoding='utf-8')
+        out_rej_morph.write_text('', encoding='utf-8')
+        return counts
+
+    # Column variants for extent guards
+    xmin_keys = ['XMIN_IMAGE', 'XMIN', 'XMIN_PIX']
+    xmax_keys = ['XMAX_IMAGE', 'XMAX', 'XMAX_PIX']
+    ymin_keys = ['YMIN_IMAGE', 'YMIN', 'YMIN_PIX']
+    ymax_keys = ['YMAX_IMAGE', 'YMAX', 'YMAX_PIX']
+
+    def _first_present(keys):
+        for k in keys:
+            if k in fieldnames:
+                return k
+        return None
+
+    xmin = _first_present(xmin_keys)
+    xmax = _first_present(xmax_keys)
+    ymin = _first_present(ymin_keys)
+    ymax = _first_present(ymax_keys)
+
+    def _f(row, key, default=None):
+        try:
+            v = row.get(key, '')
+            if v is None or v == '':
+                return default
+            return float(v)
+        except Exception:
+            return default
+
+    rej_extract = []
+    rej_morph = []
+
+    for row in rows:
+        reasons_extract = []
+        reasons_morph = []
+
+        flags = _f(row, 'FLAGS', None)
+        snr = _f(row, 'SNR_WIN', None)
+
+        if flags is None or flags != 0:
+            reasons_extract.append('flags')
+        if snr is None or snr < 30.0:
+            reasons_extract.append('snr')
+
+        if reasons_extract:
+            if 'flags' in reasons_extract:
+                counts['late_reject_flags'] += 1
+            if 'snr' in reasons_extract:
+                counts['late_reject_snr'] += 1
+            rr = dict(row)
+            rr['reject_reason'] = '|'.join(reasons_extract)
+            rej_extract.append(rr)
+            continue
+
+        # Morphology hard gates
+        fwhm = _f(row, 'FWHM_IMAGE', None)
+        elong = _f(row, 'ELONGATION', None)
+        spread = _f(row, 'SPREAD_MODEL', None)
+
+        if spread is None or spread <= -0.002:
+            reasons_morph.append('spread_model')
+        if fwhm is None or not (fwhm > 2.0 and fwhm < 7.0):
+            reasons_morph.append('fwhm')
+        if elong is None or elong >= 1.3:
+            reasons_morph.append('elongation')
+
+        # Extent guards when columns exist
+        if xmin and xmax and ymin and ymax:
+            dx1 = _f(row, xmax, None)
+            dx0 = _f(row, xmin, None)
+            dy1 = _f(row, ymax, None)
+            dy0 = _f(row, ymin, None)
+            if None not in (dx1, dx0, dy1, dy0):
+                ex = abs(dx1 - dx0)
+                ey = abs(dy1 - dy0)
+                if not (ex > 1.0 and ey > 1.0):
+                    reasons_morph.append('extent_min')
+                # acceptance is <2, so reject if >=2
+                if abs(ex * ey) >= 2.0:
+                    reasons_morph.append('extent_delta')
+
+        if reasons_morph:
+            if 'spread_model' in reasons_morph:
+                counts['late_reject_spread_model'] += 1
+            if 'fwhm' in reasons_morph:
+                counts['late_reject_fwhm'] += 1
+            if 'elongation' in reasons_morph:
+                counts['late_reject_elongation'] += 1
+            if 'extent_min' in reasons_morph:
+                counts['late_reject_extent_min'] += 1
+            if 'extent_delta' in reasons_morph:
+                counts['late_reject_extent_delta'] += 1
+            rr = dict(row)
+            rr['reject_reason'] = '|'.join(reasons_morph)
+            rej_morph.append(rr)
+        else:
+            counts['late_kept_hard_gates'] += 1
+
+    out_rej_extract.parent.mkdir(parents=True, exist_ok=True)
+    out_rej_morph.parent.mkdir(parents=True, exist_ok=True)
+
+    def _write(path, out_rows):
+        if not out_rows:
+            path.write_text('', encoding='utf-8')
+            return
+        fns = list(out_rows[0].keys())
+        with path.open('w', newline='', encoding='utf-8') as f:
+            w = csv.DictWriter(f, fieldnames=fns)
+            w.writeheader()
+            w.writerows(out_rows)
+
+    _write(out_rej_extract, rej_extract)
+    _write(out_rej_morph, rej_morph)
+    return counts
+
 # --- NEW: MNRAS integration helpers ---
 
 def _apply_mnras_filters_and_spikes(tile_dir: Path, sex_csv: Path, buckets: dict) -> Path:
@@ -748,10 +938,8 @@ def _ensure_sextractor_csv(tile_dir: Path, pass2_ldac: str | Path) -> Path:
     return sex_csv
 
 
-
-
 def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> None:
-    """    Step4 (LOCAL backend) — veto-first ordering (Step4a/Step4b).
+    """ Step4 (LOCAL backend) — veto-first ordering (Step4a/Step4b).
 
     Step4a (optical veto, elimination semantics):
       - Gaia veto: write xmatch/sex_gaia_xmatch.csv (matched pairs) and
@@ -764,10 +952,10 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> No
     Step4b (late filters):
       - Apply extract/morphology filters + spike cuts on the post-veto remainder.
 
-    Notes:
-      - Prefers WCSFIX RA_corr/Dec_corr when available.
-      - Keeps output filenames sex_*_xmatch.csv so Step5 can generate *_within5arcsec.csv.
-      - USNO-B remains optional (if cache missing/invalid, veto is skipped and remainder carries forward).
+    Extra outputs added by this implementation:
+      - catalogs/sextractor_pass2.after_usnob_veto.rejected_extract.csv
+      - catalogs/sextractor_pass2.after_usnob_veto.rejected_morphology.csv
+      - Additional fields merged into MNRAS_SUMMARY.json (veto counts + rejection counts)
     """
     tile_dir = Path(tile_dir)
     xdir = tile_dir / 'xmatch'
@@ -875,28 +1063,76 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> No
     out_ps1 = xdir / 'sex_ps1_xmatch.csv'
     out_usnob = xdir / 'sex_usnob_xmatch.csv'
 
-    # Gaia veto first
-    _veto('Gaia', sex_for_veto, gaia_csv, out_gaia, after_gaia, default_cat_cols=('ra', 'dec'))
+    # Veto accounting
+    veto_start_rows = _csv_data_rows(sex_for_veto)
 
-    # PS1 veto on Gaia-unmatched
-    _veto('PS1', after_gaia, ps1_csv, out_ps1, after_ps1, default_cat_cols=('raMean', 'decMean'), disable_env='VASCO_DISABLE_PS1')
+    gaia_ok = _veto('Gaia', sex_for_veto, gaia_csv, out_gaia, after_gaia, default_cat_cols=('ra', 'dec'))
+    veto_after_gaia_rows = _csv_data_rows(after_gaia)
 
-    # USNO-B veto on PS1-unmatched
-    usno_ok = _veto('USNO-B', after_ps1, usnob_csv, out_usnob, after_usnob, default_cat_cols=('RAJ2000', 'DEJ2000'), disable_env='VASCO_DISABLE_USNOB')
-    if not usno_ok:
-        buckets.setdefault('usnob_veto_skipped', 0)
-        buckets['usnob_veto_skipped'] += 1
+    ps1_ok = _veto('PS1', after_gaia, ps1_csv, out_ps1, after_ps1,
+                   default_cat_cols=('raMean', 'decMean'), disable_env='VASCO_DISABLE_PS1')
+    veto_after_ps1_rows = _csv_data_rows(after_ps1)
+
+    usno_ok = _veto('USNO-B', after_ps1, usnob_csv, out_usnob, after_usnob,
+                    default_cat_cols=('RAJ2000', 'DEJ2000'), disable_env='VASCO_DISABLE_USNOB')
+    veto_after_usnob_rows = _csv_data_rows(after_usnob)
+
+    # “Eliminated” (based on carry-forward rowcounts)
+    veto_gaia_eliminated = max(0, veto_start_rows - veto_after_gaia_rows)
+    veto_ps1_eliminated = max(0, veto_after_gaia_rows - veto_after_ps1_rows)
+    veto_usnob_eliminated = max(0, veto_after_ps1_rows - veto_after_usnob_rows)
+
+    # Pair counts (matched-pairs outputs; not unique candidates)
+    veto_gaia_pairs = _csv_data_rows(out_gaia)
+    veto_ps1_pairs = _csv_data_rows(out_ps1)
+    veto_usnob_pairs = _csv_data_rows(out_usnob)
 
     # Step4b: late filters/spikes on the post-veto remainder
     remainder = after_usnob
     try:
         if (not remainder.exists()) or remainder.stat().st_size == 0:
             write_summary(tile_dir, finalize(buckets), md_path='MNRAS_SUMMARY.md', json_path='MNRAS_SUMMARY.json')
+            _augment_summary_json(tile_dir, {
+                'veto_start_rows': veto_start_rows,
+                'veto_after_gaia_rows': veto_after_gaia_rows,
+                'veto_after_ps1_rows': veto_after_ps1_rows,
+                'veto_after_usnob_rows': veto_after_usnob_rows,
+                'veto_gaia_eliminated': veto_gaia_eliminated,
+                'veto_ps1_eliminated': veto_ps1_eliminated,
+                'veto_usnob_eliminated': veto_usnob_eliminated,
+                'veto_gaia_pairs': veto_gaia_pairs,
+                'veto_ps1_pairs': veto_ps1_pairs,
+                'veto_usnob_pairs': veto_usnob_pairs,
+                'veto_gaia_ok': bool(gaia_ok),
+                'veto_ps1_ok': bool(ps1_ok),
+                'veto_usnob_ok': bool(usno_ok),
+            })
             return
     except Exception:
         write_summary(tile_dir, finalize(buckets), md_path='MNRAS_SUMMARY.md', json_path='MNRAS_SUMMARY.json')
+        _augment_summary_json(tile_dir, {
+            'veto_start_rows': veto_start_rows,
+            'veto_after_gaia_rows': veto_after_gaia_rows,
+            'veto_after_ps1_rows': veto_after_ps1_rows,
+            'veto_after_usnob_rows': veto_after_usnob_rows,
+            'veto_gaia_eliminated': veto_gaia_eliminated,
+            'veto_ps1_eliminated': veto_ps1_eliminated,
+            'veto_usnob_eliminated': veto_usnob_eliminated,
+            'veto_gaia_pairs': veto_gaia_pairs,
+            'veto_ps1_pairs': veto_ps1_pairs,
+            'veto_usnob_pairs': veto_usnob_pairs,
+            'veto_gaia_ok': bool(gaia_ok),
+            'veto_ps1_ok': bool(ps1_ok),
+            'veto_usnob_ok': bool(usno_ok),
+        })
         return
 
+    # Write rejection reasons for the post-veto remainder (should be small)
+    rej_extract = catdir / 'sextractor_pass2.after_usnob_veto.rejected_extract.csv'
+    rej_morph = catdir / 'sextractor_pass2.after_usnob_veto.rejected_morphology.csv'
+    reason_counts = _analyze_rejection_reasons(remainder, rej_extract, rej_morph)
+
+    # Apply the actual filters/spikes pipeline
     _apply_mnras_filters_and_spikes(tile_dir, remainder, buckets)
 
     # Keep HPM late and conservative (flagging only)
@@ -906,6 +1142,25 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> No
         pass
 
     write_summary(tile_dir, finalize(buckets), md_path='MNRAS_SUMMARY.md', json_path='MNRAS_SUMMARY.json')
+
+    # Augment summary with veto stage counts + hard-gate rejection counts
+    extra = {
+        'veto_start_rows': veto_start_rows,
+        'veto_after_gaia_rows': veto_after_gaia_rows,
+        'veto_after_ps1_rows': veto_after_ps1_rows,
+        'veto_after_usnob_rows': veto_after_usnob_rows,
+        'veto_gaia_eliminated': veto_gaia_eliminated,
+        'veto_ps1_eliminated': veto_ps1_eliminated,
+        'veto_usnob_eliminated': veto_usnob_eliminated,
+        'veto_gaia_pairs': veto_gaia_pairs,
+        'veto_ps1_pairs': veto_ps1_pairs,
+        'veto_usnob_pairs': veto_usnob_pairs,
+        'veto_gaia_ok': bool(gaia_ok),
+        'veto_ps1_ok': bool(ps1_ok),
+        'veto_usnob_ok': bool(usno_ok),
+    }
+    extra.update(reason_counts)
+    _augment_summary_json(tile_dir, extra)
 
 # --- CDS logging & helpers ---
 
