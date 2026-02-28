@@ -310,158 +310,193 @@ def _augment_summary_json(tile_dir: Path, extra: dict) -> None:
     except Exception:
         return
 
-
 def _analyze_rejection_reasons(
     src_csv: Path,
     out_rej_extract: Path,
     out_rej_morph: Path,
 ) -> dict:
     """
-    Analyze remainder rows against hard extract/morphology gates and write rejection CSVs.
+    Analyze remainder rows against the SAME extract + morphology rules as filters_mnras.py
+    and write rejection CSVs with a reject_reason column.
 
-    This does NOT attempt to reproduce optional sigma-clipping behavior. It reports only hard gates:
-      - extract: FLAGS==0, SNR_WIN>=30
-      - morphology: SPREAD_MODEL > -0.002, 2 < FWHM_IMAGE < 7, ELONGATION < 1.3,
-        plus pixel-extent guards when XMIN/XMAX/YMIN/YMAX columns exist.
-
-    Returns a dict of counts (per reason) suitable for merging into MNRAS_SUMMARY.json.
+    Rules mirrored from filters_mnras.py:
+      Extract:
+        - FLAGS == 0
+        - SNR_WIN > 30   (note: strict '>' per filters_mnras.py)
+      Morphology:
+        - optional robust sigma-clip (default True): FWHM_IMAGE and ELONGATION within k*MAD
+        - SPREAD_MODEL > -0.002
+        - 2 < FWHM_IMAGE < 7
+        - ELONGATION < 1.3
+        - extent (if XMIN/XMAX/YMIN/YMAX exist):
+            abs((XMAX-XMIN) - (YMAX-YMIN)) < 2
+            (XMAX-XMIN) > 1 and (YMAX-YMIN) > 1
     """
     import csv
+    import numpy as np
 
     src_csv = Path(src_csv)
     out_rej_extract = Path(out_rej_extract)
     out_rej_morph = Path(out_rej_morph)
 
     counts = {
-        'late_reject_flags': 0,
-        'late_reject_snr': 0,
-        'late_reject_spread_model': 0,
-        'late_reject_fwhm': 0,
-        'late_reject_elongation': 0,
-        'late_reject_extent_delta': 0,
-        'late_reject_extent_min': 0,
-        'late_kept_hard_gates': 0,
+        "late_reject_flags": 0,
+        "late_reject_snr": 0,
+        "late_reject_sigma_clip_fwhm": 0,
+        "late_reject_sigma_clip_elongation": 0,
+        "late_reject_spread_model": 0,
+        "late_reject_fwhm": 0,
+        "late_reject_elongation": 0,
+        "late_reject_extent_delta": 0,
+        "late_reject_extent_min": 0,
+        "late_kept_hard_gates": 0,
     }
 
     if (not src_csv.exists()) or src_csv.stat().st_size == 0:
-        out_rej_extract.write_text('', encoding='utf-8')
-        out_rej_morph.write_text('', encoding='utf-8')
+        out_rej_extract.write_text("", encoding="utf-8")
+        out_rej_morph.write_text("", encoding="utf-8")
         return counts
 
-    with src_csv.open(newline='', encoding='utf-8', errors='ignore') as f:
+    with src_csv.open(newline="", encoding="utf-8", errors="ignore") as f:
         r = csv.DictReader(f)
         rows = list(r)
-        fieldnames = (r.fieldnames or [])
+        fieldnames = r.fieldnames or []
 
     if not fieldnames:
-        out_rej_extract.write_text('', encoding='utf-8')
-        out_rej_morph.write_text('', encoding='utf-8')
+        out_rej_extract.write_text("", encoding="utf-8")
+        out_rej_morph.write_text("", encoding="utf-8")
         return counts
-
-    # Column variants for extent guards
-    xmin_keys = ['XMIN_IMAGE', 'XMIN', 'XMIN_PIX']
-    xmax_keys = ['XMAX_IMAGE', 'XMAX', 'XMAX_PIX']
-    ymin_keys = ['YMIN_IMAGE', 'YMIN', 'YMIN_PIX']
-    ymax_keys = ['YMAX_IMAGE', 'YMAX', 'YMAX_PIX']
-
-    def _first_present(keys):
-        for k in keys:
-            if k in fieldnames:
-                return k
-        return None
-
-    xmin = _first_present(xmin_keys)
-    xmax = _first_present(xmax_keys)
-    ymin = _first_present(ymin_keys)
-    ymax = _first_present(ymax_keys)
 
     def _f(row, key, default=None):
         try:
-            v = row.get(key, '')
-            if v is None or v == '':
+            v = row.get(key, "")
+            if v is None or v == "":
                 return default
             return float(v)
         except Exception:
             return default
 
+    # --- robust sigma clip (mirrors filters_mnras._robust_sigma_clip) ---
+    def _robust_sigma_clip(x: np.ndarray, k: float = 2.0) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        med = np.nanmedian(x)
+        mad = np.nanmedian(np.abs(x - med))
+        sigma = 1.4826 * mad
+        if not np.isfinite(sigma) or sigma <= 0:
+            return np.isfinite(x)
+        return np.isfinite(x) & (np.abs(x - med) <= k * sigma)
+
+    sigma_clip = True  # matches filters_mnras default
+    sigma_k = 2.0
+
+    # Precompute sigma-clip masks over the whole remainder, if columns exist
+    sc_fwhm = None
+    sc_elong = None
+    if sigma_clip and ("FWHM_IMAGE" in fieldnames):
+        fwhm_all = np.array([_f(row, "FWHM_IMAGE", np.nan) for row in rows], dtype=float)
+        sc_fwhm = _robust_sigma_clip(fwhm_all, k=sigma_k)
+    if sigma_clip and ("ELONGATION" in fieldnames):
+        elong_all = np.array([_f(row, "ELONGATION", np.nan) for row in rows], dtype=float)
+        sc_elong = _robust_sigma_clip(elong_all, k=sigma_k)
+
+    have_extent = {"XMAX_IMAGE", "XMIN_IMAGE", "YMAX_IMAGE", "YMIN_IMAGE"}.issubset(set(fieldnames))
+
     rej_extract = []
     rej_morph = []
 
-    for row in rows:
+    for i, row in enumerate(rows):
         reasons_extract = []
         reasons_morph = []
 
-        flags = _f(row, 'FLAGS', None)
-        snr = _f(row, 'SNR_WIN', None)
+        # --- Extract rules (mirrors filters_mnras.apply_extract_filters) ---
+        flags = _f(row, "FLAGS", None)
+        snr = _f(row, "SNR_WIN", None)
 
         if flags is None or flags != 0:
-            reasons_extract.append('flags')
-        if snr is None or snr < 30.0:
-            reasons_extract.append('snr')
+            reasons_extract.append("flags")
+        # NOTE: filters_mnras uses '>' not '>='
+        if snr is None or not (snr > 30.0):
+            reasons_extract.append("snr")
 
         if reasons_extract:
-            if 'flags' in reasons_extract:
-                counts['late_reject_flags'] += 1
-            if 'snr' in reasons_extract:
-                counts['late_reject_snr'] += 1
+            if "flags" in reasons_extract:
+                counts["late_reject_flags"] += 1
+            if "snr" in reasons_extract:
+                counts["late_reject_snr"] += 1
             rr = dict(row)
-            rr['reject_reason'] = '|'.join(reasons_extract)
+            rr["reject_reason"] = "|".join(reasons_extract)
             rej_extract.append(rr)
             continue
 
-        # Morphology hard gates
-        fwhm = _f(row, 'FWHM_IMAGE', None)
-        elong = _f(row, 'ELONGATION', None)
-        spread = _f(row, 'SPREAD_MODEL', None)
+        # --- Sigma clipping (mirrors filters_mnras behavior) ---
+        if sc_fwhm is not None and (not bool(sc_fwhm[i])):
+            reasons_morph.append("sigma_clip_fwhm")
+        if sc_elong is not None and (not bool(sc_elong[i])):
+            reasons_morph.append("sigma_clip_elongation")
 
-        if spread is None or spread <= -0.002:
-            reasons_morph.append('spread_model')
+        # --- Hard morphology rules ---
+        spread = _f(row, "SPREAD_MODEL", None)
+        if spread is None or not (spread > -0.002):
+            reasons_morph.append("spread_model")
+
+        fwhm = _f(row, "FWHM_IMAGE", None)
         if fwhm is None or not (fwhm > 2.0 and fwhm < 7.0):
-            reasons_morph.append('fwhm')
-        if elong is None or elong >= 1.3:
-            reasons_morph.append('elongation')
+            reasons_morph.append("fwhm")
 
-        # Extent guards when columns exist
-        if xmin and xmax and ymin and ymax:
-            dx1 = _f(row, xmax, None)
-            dx0 = _f(row, xmin, None)
-            dy1 = _f(row, ymax, None)
-            dy0 = _f(row, ymin, None)
-            if None not in (dx1, dx0, dy1, dy0):
-                ex = abs(dx1 - dx0)
-                ey = abs(dy1 - dy0)
-                if not (ex > 1.0 and ey > 1.0):
-                    reasons_morph.append('extent_min')
-                # acceptance is <2, so reject if >=2
-                if abs(ex * ey) >= 2.0:
-                    reasons_morph.append('extent_delta')
+        elong = _f(row, "ELONGATION", None)
+        if elong is None or not (elong < 1.3):
+            reasons_morph.append("elongation")
 
+        # Extent rules (correct rule: abs(dx - dy) < 2, dx>1, dy>1)
+        if have_extent:
+            xmax = _f(row, "XMAX_IMAGE", None)
+            xmin = _f(row, "XMIN_IMAGE", None)
+            ymax = _f(row, "YMAX_IMAGE", None)
+            ymin = _f(row, "YMIN_IMAGE", None)
+            if None not in (xmax, xmin, ymax, ymin):
+                dx = xmax - xmin
+                dy = ymax - ymin
+                if not (np.isfinite(dx) and np.isfinite(dy)):
+                    reasons_morph.append("extent_nan")
+                else:
+                    if not (dx > 1.0 and dy > 1.0):
+                        reasons_morph.append("extent_min")
+                    if not (abs(dx - dy) < 2.0):
+                        reasons_morph.append("extent_delta")
+
+        # --- Tally ---
         if reasons_morph:
-            if 'spread_model' in reasons_morph:
-                counts['late_reject_spread_model'] += 1
-            if 'fwhm' in reasons_morph:
-                counts['late_reject_fwhm'] += 1
-            if 'elongation' in reasons_morph:
-                counts['late_reject_elongation'] += 1
-            if 'extent_min' in reasons_morph:
-                counts['late_reject_extent_min'] += 1
-            if 'extent_delta' in reasons_morph:
-                counts['late_reject_extent_delta'] += 1
+            # counts by reason
+            for rname in reasons_morph:
+                if rname == "sigma_clip_fwhm":
+                    counts["late_reject_sigma_clip_fwhm"] += 1
+                elif rname == "sigma_clip_elongation":
+                    counts["late_reject_sigma_clip_elongation"] += 1
+                elif rname == "spread_model":
+                    counts["late_reject_spread_model"] += 1
+                elif rname == "fwhm":
+                    counts["late_reject_fwhm"] += 1
+                elif rname == "elongation":
+                    counts["late_reject_elongation"] += 1
+                elif rname == "extent_min":
+                    counts["late_reject_extent_min"] += 1
+                elif rname == "extent_delta":
+                    counts["late_reject_extent_delta"] += 1
             rr = dict(row)
-            rr['reject_reason'] = '|'.join(reasons_morph)
+            rr["reject_reason"] = "|".join(reasons_morph)
             rej_morph.append(rr)
         else:
-            counts['late_kept_hard_gates'] += 1
+            counts["late_kept_hard_gates"] += 1
 
     out_rej_extract.parent.mkdir(parents=True, exist_ok=True)
     out_rej_morph.parent.mkdir(parents=True, exist_ok=True)
 
     def _write(path, out_rows):
         if not out_rows:
-            path.write_text('', encoding='utf-8')
+            path.write_text("", encoding="utf-8")
             return
         fns = list(out_rows[0].keys())
-        with path.open('w', newline='', encoding='utf-8') as f:
+        with path.open("w", newline="", encoding="utf-8") as f:
             w = csv.DictWriter(f, fieldnames=fns)
             w.writeheader()
             w.writerows(out_rows)
@@ -1134,6 +1169,13 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> No
 
     # Apply the actual filters/spikes pipeline
     _apply_mnras_filters_and_spikes(tile_dir, remainder, buckets)
+    
+    try:
+        filtered_path = catdir / 'sextractor_pass2.filtered.csv'
+        total_after = _csv_data_rows(filtered_path)
+        _augment_summary_json(tile_dir, {'total_after_filters': int(total_after)})
+    except Exception:
+        pass
 
     # Keep HPM late and conservative (flagging only)
     try:
