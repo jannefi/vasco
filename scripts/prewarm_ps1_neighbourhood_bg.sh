@@ -21,6 +21,7 @@ cmd_start () {
     --workers 4 \
     --radius-arcmin 35 \
     --retry 3 \
+    --timeout 120 \
     --progress-every 100 \
     > "$OUTFILE" 2>&1 &
 
