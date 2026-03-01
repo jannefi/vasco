@@ -294,6 +294,23 @@ def _csv_data_rows(path: Path) -> int:
     except Exception:
         return -1
 
+def _csv_has_data_row_fast(path: Path) -> bool:
+    """
+    True if CSV has at least one data row (not just header).
+    Reads only the first two lines -> O(1) and avoids scanning big files.
+    """
+    try:
+        p = Path(path)
+        if not p.exists() or p.stat().st_size == 0:
+            return False
+        with p.open("r", encoding="utf-8", errors="ignore") as f:
+            hdr = f.readline()
+            if not hdr:
+                return False
+            second = f.readline()
+            return bool(second)
+    except Exception:
+        return False
 
 def _augment_summary_json(tile_dir: Path, extra: dict) -> None:
     """Merge extra fields into <tile>/MNRAS_SUMMARY.json if it exists (best-effort)."""
@@ -1092,14 +1109,30 @@ def _post_xmatch_tile(tile_dir, pass2_ldac, *, radius_arcsec: float = 5.0) -> No
             except Exception:
                 pass
 
-    def _veto(stage: str, in_candidates: Path, catalog: Path, out_match: Path, out_unmatched: Path,
-              default_cat_cols: tuple[str, str], disable_env: str | None = None) -> bool:
+    def _veto(stage: str,
+          in_candidates: Path,
+          catalog: Path,
+          out_match: Path,
+          out_unmatched: Path,
+          default_cat_cols: tuple[str, str],
+          disable_env: str | None = None) -> bool:
+
+        # Env disable: treat as skip, carry-forward unchanged
         if disable_env and os.getenv(disable_env):
             print('[POST][INFO]', tile_dir.name, f'{stage} disabled by env ({disable_env}) -> skipping veto')
             _copy_or_empty(in_candidates, out_unmatched)
             return False
-        if not (catalog.exists() and _csv_has_radec(catalog)):
-            print('[POST][WARN]', tile_dir.name, f'{stage} cache missing/invalid -> skipping veto; carry-forward unchanged')
+
+        # If candidate input is empty/header-only, nothing to veto; carry-forward empty
+        if not _csv_has_data_row_fast(in_candidates):
+            print('[POST][INFO]', tile_dir.name, f'{stage} veto skipped: candidates empty (0 data rows)')
+            out_unmatched.write_text('', encoding='utf-8')
+            return False
+
+        # Catalog must exist, have RA/Dec *and* have at least one data row
+        if not (catalog.exists() and _csv_has_radec(catalog) and _csv_has_data_row_fast(catalog)):
+            # This is the key fix for header-only ps1_neighbourhood/usnob_neighbourhood
+            print('[POST][INFO]', tile_dir.name, f'{stage} veto skipped: catalogue missing/invalid/empty -> carry-forward unchanged')
             buckets.setdefault('missing_inputs', 0)
             buckets['missing_inputs'] += 1
             _copy_or_empty(in_candidates, out_unmatched)
@@ -1428,7 +1461,7 @@ def cmd_step4_xmatch(args: argparse.Namespace) -> int:
         """Return True if cache CSV exists, is non-empty, and has RA/Dec columns."""
         try:
             p = Path(path)
-            return p.exists() and p.stat().st_size > 0 and _csv_has_radec(p)
+            return p.exists() and p.stat().st_size > 0 and _csv_has_radec(p) and _csv_has_data_row_fast(p)
         except Exception:
             return False
 
