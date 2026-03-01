@@ -1457,68 +1457,114 @@ def cmd_step4_xmatch(args: argparse.Namespace) -> int:
         print('[STEP4][ERROR] pass2.ldac missing. Run step3-psf-and-pass2 first.')
         return 2
 
+    import os
+
+    def _truthy_env(name: str) -> bool:
+        v = os.getenv(name, '').strip().lower()
+        return v not in ('', '0', 'false', 'no')
+
+    NO_FETCH = _truthy_env('VASCO_STEP4_NO_FETCH')
+
     def _cache_ok(path: Path) -> bool:
         """Return True if cache CSV exists, is non-empty, and has RA/Dec columns."""
         try:
             p = Path(path)
-            return p.exists() and p.stat().st_size > 0 and _csv_has_radec(p) and _csv_has_data_row_fast(p)
+            return p.exists() and p.stat().st_size > 0 and _csv_has_radec(p)
         except Exception:
             return False
 
+    # Header-only sentinel for PS1 mean.csv (keeps "fetch ran / 0 rows" semantics)
+    PS1_HEADER = (
+        "objID,raMean,decMean,nDetections,ng,nr,ni,nz,ny,"
+        "gMeanPSFMag,rMeanPSFMag,iMeanPSFMag,zMeanPSFMag,yMeanPSFMag\n"
+    )
+
+    def _ensure_ps1_sentinel(ps1_path: Path) -> None:
+        """Ensure ps1_neighbourhood.csv exists and is header-only sentinel (non-empty)."""
+        try:
+            ps1_path.parent.mkdir(parents=True, exist_ok=True)
+            # Only write if missing or empty; do not overwrite real data.
+            if (not ps1_path.exists()) or ps1_path.stat().st_size == 0:
+                ps1_path.write_text(PS1_HEADER, encoding='utf-8')
+        except Exception:
+            pass
+
     backend = args.xmatch_backend
+
     if backend == 'local':
         # Best-effort tile center (used by neighbourhood fetchers)
         try:
             stem = Path(json.loads((run_dir / 'RUN_INDEX.json').read_text(encoding='utf-8'))[0]['tile']).name
-            parts = stem.split('_'); ra_t = float(parts[1]); dec_t = float(parts[2])
+            parts = stem.split('_')
+            ra_t = float(parts[1])
+            dec_t = float(parts[2])
         except Exception:
             ra_t, dec_t = 0.0, 0.0
 
         radius_arcmin = args.size_arcmin * (2 ** 0.5) * 0.5
 
-        # -----------------------------
-        # Cache-aware fetch-on-miss
-        # -----------------------------
         gaia_cache = run_dir / 'catalogs' / 'gaia_neighbourhood.csv'
-        try:
-            if os.getenv('VASCO_FORCE_FETCH_GAIA'):
-                fetch_gaia_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
-            elif _cache_ok(gaia_cache):
-                print('[STEP4][INFO]', run_dir.name, 'Gaia cache present — skipping fetch')
-            else:
-                fetch_gaia_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
-        except Exception as e:
-            print('[STEP4][WARN]', run_dir.name, 'Gaia fetch failed:', e)
-
-        ps1_cache = run_dir / 'catalogs' / 'ps1_neighbourhood.csv'
-        try:
-            if os.getenv('VASCO_DISABLE_PS1'):
-                print('[STEP4][INFO]', run_dir.name, 'PS1 disabled by env')
-            else:
-                if os.getenv('VASCO_FORCE_FETCH_PS1'):
-                    fetch_ps1_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
-                elif _cache_ok(ps1_cache):
-                    print('[STEP4][INFO]', run_dir.name, 'PS1 cache present — skipping fetch')
-                else:
-                    fetch_ps1_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
-        except Exception as e:
-            print('[STEP4][WARN]', run_dir.name, 'PS1 fetch failed:', e)
-
+        ps1_cache  = run_dir / 'catalogs' / 'ps1_neighbourhood.csv'
         usnob_cache = run_dir / 'catalogs' / 'usnob_neighbourhood.csv'
-        try:
-            if os.getenv('VASCO_DISABLE_USNOB'):
-                print('[STEP4][INFO]', run_dir.name, 'USNO-B disabled by env')
-            else:
-                if os.getenv('VASCO_FORCE_FETCH_USNOB'):
-                    fetch_usnob_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
-                    print('[STEP4]', run_dir.name, 'USNO-B -> catalogs/usnob_neighbourhood.csv')
-                elif _cache_ok(usnob_cache):
-                    print('[STEP4][INFO]', run_dir.name, 'USNO-B cache present — skipping fetch')
+
+        # -----------------------------
+        # Cache-aware fetch-on-miss (with optional NO_FETCH)
+        # -----------------------------
+        if NO_FETCH:
+            print('[STEP4][INFO]', run_dir.name, 'VASCO_STEP4_NO_FETCH=1 -> skipping Gaia/PS1/USNO fetch; using existing caches only')
+        else:
+            # ---- Gaia ----
+            try:
+                if os.getenv('VASCO_FORCE_FETCH_GAIA'):
+                    fetch_gaia_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
+                elif _cache_ok(gaia_cache):
+                    print('[STEP4][INFO]', run_dir.name, 'Gaia cache present — skipping fetch')
                 else:
-                    fetch_usnob_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
-                    print('[STEP4]', run_dir.name, 'USNO-B -> catalogs/usnob_neighbourhood.csv')
-        except Exception as e:
-            print('[STEP4][WARN]', run_dir.name, 'USNO-B fetch failed:', e)
+                    fetch_gaia_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
+            except Exception as e:
+                print('[STEP4][WARN]', run_dir.name, 'Gaia fetch failed:', e)
+
+            # ---- PS1 ----
+            try:
+                if os.getenv('VASCO_DISABLE_PS1'):
+                    print('[STEP4][INFO]', run_dir.name, 'PS1 disabled by env')
+                else:
+                    # LOCAL coverage guard (mirror CDS path behavior)
+                    if dec_t < -30.0:
+                        print('[STEP4][INFO]', run_dir.name, f'PS1 skipped (Dec={dec_t:.3f} < -30°, outside coverage)')
+                        _ensure_ps1_sentinel(ps1_cache)
+                    else:
+                        if os.getenv('VASCO_FORCE_FETCH_PS1'):
+                            fetch_ps1_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
+                        elif _cache_ok(ps1_cache):
+                            print('[STEP4][INFO]', run_dir.name, 'PS1 cache present — skipping fetch')
+                        else:
+                            fetch_ps1_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
+
+                        # If PS1 returned 0 bytes (observed in your retest), normalize to header-only sentinel
+                        try:
+                            if ps1_cache.exists() and ps1_cache.stat().st_size == 0:
+                                _ensure_ps1_sentinel(ps1_cache)
+                        except Exception:
+                            pass
+            except Exception as e:
+                print('[STEP4][WARN]', run_dir.name, 'PS1 fetch failed:', e)
+
+            # ---- USNO-B ----
+            try:
+                if os.getenv('VASCO_DISABLE_USNOB'):
+                    print('[STEP4][INFO]', run_dir.name, 'USNO-B disabled by env')
+                else:
+                    if os.getenv('VASCO_FORCE_FETCH_USNOB'):
+                        fetch_usnob_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
+                        print('[STEP4]', run_dir.name, 'USNO-B -> catalogs/usnob_neighbourhood.csv')
+                    elif _cache_ok(usnob_cache):
+                        print('[STEP4][INFO]', run_dir.name, 'USNO-B cache present — skipping fetch')
+                    else:
+                        fetch_usnob_neighbourhood(run_dir, ra_t, dec_t, radius_arcmin)
+                        print('[STEP4]', run_dir.name, 'USNO-B -> catalogs/usnob_neighbourhood.csv')
+            except Exception as e:
+                print('[STEP4][WARN]', run_dir.name, 'USNO-B fetch failed:', e)
 
         # Proceed to xmatch using whatever caches exist
         _post_xmatch_tile(run_dir, p2, radius_arcsec=float(args.xmatch_radius_arcsec))
