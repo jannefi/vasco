@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
-# SkyBoT full run (Option C), resume-safe, background-friendly
+# SkyBoT full run (run-scoped chunks), resume-safe, background-friendly — NO DuckDB
 set -euo pipefail
 
-# ---------- Tunables via env ----------
-PARALLEL="${PARALLEL:-2}"        # xargs -P; keep small for etiquette
-WORK="${WORK:-./work}"
-CHUNK_DIR="${CHUNK_DIR:-$WORK/scos_chunks}"
-OUTROOT="${OUTROOT:-data/local-cats/_master_optical_parquet_flags/skybot}"
+PARALLEL="${PARALLEL:-2}"
+CHUNK_DIR="${CHUNK_DIR:-work/scos_chunks}"
+OUTROOT="${OUTROOT:-work/scos_chunks/skybot}"
 LOGDIR="${LOGDIR:-./logs}"
-SURV_DIR="${SURV_DIR:-}"         # optional; if set, do quick counts at end
-FIELD_ARCMIN="${FIELD_ARCMIN:-22}"     # << cover tile footprint
+
+FIELD_ARCMIN="${FIELD_ARCMIN:-22}"
 MATCH_ARCSEC="${MATCH_ARCSEC:-5}"
-WIDE_ARCSEC="${WIDE_ARCSEC:-60}"       # << MNRAS-like wide
+WIDE_ARCSEC="${WIDE_ARCSEC:-60}"
+
 FB_PER_ROW="${FB_PER_ROW:-true}"
 FB_CAP="${FB_CAP:-100}"
-CTO="${CTO:-5}"    # connect timeout
-RTO="${RTO:-5}"    # read timeout
+
+CTO="${CTO:-5}"
+RTO="${RTO:-5}"
 RETRIES="${RETRIES:-0}"
-# -------------------------------------
+
+TILE2PLATE="${TILE2PLATE:-metadata/tiles/tile_to_plate_lookup.parquet}"
+PLATEEPOCH="${PLATEEPOCH:-metadata/plates/plate_epoch_lookup.parquet}"
 
 PARTS="$OUTROOT/parts"
 LOCKDIR="$OUTROOT/.locks"
@@ -25,19 +27,19 @@ mkdir -p "$PARTS" "$LOCKDIR" "$LOGDIR"
 
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 RUN_LOG="$LOGDIR/skybot_full_${RUN_ID}.log"
-
-# Log to file (and stdout if foreground)
 exec > >(tee -a "$RUN_LOG") 2>&1
-echo "[start] SkyBoT full run (Option C)  parallel=$PARALLEL  outroot=$OUTROOT"
-echo "[info]  log: $RUN_LOG"
-date -Is
 
+echo "[start] SkyBoT full run parallel=$PARALLEL outroot=$OUTROOT chunk_dir=$CHUNK_DIR"
+date -Is
 trap 'echo "[signal] termination requested; exiting."; exit 143' TERM INT
 
-# Discover chunks
-mapfile -t CHUNKS < <(ls -1 "$CHUNK_DIR"/chunk_*.csv | sort)
+mapfile -t CHUNKS < <(ls -1 "$CHUNK_DIR"/upload_positional_chunk_*.csv 2>/dev/null | sort)
 TOTAL="${#CHUNKS[@]}"
-echo "[info] discovered $TOTAL chunks in $CHUNK_DIR"
+echo "[info] discovered $TOTAL chunks in $CHUNK_DIR (upload_positional_chunk_*.csv)"
+if [[ "$TOTAL" -eq 0 ]]; then
+  echo "[error] no upload_positional_chunk_*.csv files in $CHUNK_DIR"
+  exit 2
+fi
 
 process_one() {
   in="$1"
@@ -56,12 +58,12 @@ process_one() {
     return 0
   fi
 
-  echo "[run]  $base"
+  echo "[run] $base"
   python ./scripts/skybot_fetch_chunk.py \
     --chunk-csv "$in" \
-    --tile-to-plate metadata/tiles/tile_to_plate_lookup.parquet \
-    --plate-epoch  metadata/plates/plate_epoch_lookup.parquet \
-    --out-root     "$OUTROOT" \
+    --tile-to-plate "$TILE2PLATE" \
+    --plate-epoch "$PLATEEPOCH" \
+    --out-root "$OUTROOT" \
     --field-radius-arcmin "$FIELD_ARCMIN" \
     --match-arcsec "$MATCH_ARCSEC" --fallback-wide-arcsec "$WIDE_ARCSEC" \
     --connect-timeout "$CTO" --read-timeout "$RTO" --max-retries "$RETRIES" \
@@ -69,58 +71,18 @@ process_one() {
     --fallback-per-row "$FB_PER_ROW" --fallback-per-row-cap "$FB_CAP"
 
   rm -f "$lock"
-
   local done_count
   done_count=$(ls -1 "$PARTS"/flags_skybot__*.parquet 2>/dev/null | wc -l || true)
-  echo "[ok]   $base   (progress: ${done_count}/${TOTAL})"
+  echo "[ok] $base (progress: ${done_count}/${TOTAL})"
 }
 
 export -f process_one
-export OUTROOT PARTS LOCKDIR TOTAL FIELD_ARCMIN MATCH_ARCSEC WIDE_ARCSEC FB_PER_ROW FB_CAP CTO RTO RETRIES
+export OUTROOT PARTS LOCKDIR TOTAL FIELD_ARCMIN MATCH_ARCSEC WIDE_ARCSEC FB_PER_ROW FB_CAP CTO RTO RETRIES TILE2PLATE PLATEEPOCH
 
-printf '%s\0' "${CHUNKS[@]}" \
-| xargs -0 -n1 -P "$PARALLEL" bash -c 'process_one "$@"' _
+printf '%s\0' "${CHUNKS[@]}" | xargs -0 -n1 -P "$PARALLEL" bash -c 'set -euo pipefail; process_one "$@"' _
 
-echo "[merge] Aggregating canonicals with DuckDB"
-duckdb -batch <<'SQL'
-  INSTALL parquet; LOAD parquet;
-  CREATE OR REPLACE VIEW parts AS
-    SELECT * FROM read_parquet('data/local-cats/_master_optical_parquet_flags/skybot/parts/flags_skybot__*.parquet');
-  COPY (
-    SELECT row_id,
-           BOOL_OR(has_skybot_match)  AS has_skybot_match,
-           BOOL_OR(wide_skybot_match) AS wide_skybot_match,
-           MIN(best_sep_arcsec)       AS best_sep_arcsec_min
-    FROM parts
-    GROUP BY 1
-  )
-  TO 'data/local-cats/_master_optical_parquet_flags/skybot/flags_skybot.parquet'
-  (FORMAT PARQUET);
-
-  COPY parts
-    TO 'data/local-cats/_master_optical_parquet_flags/skybot/flags_skybot_audit.parquet'
-  (FORMAT PARQUET);
-SQL
+echo "[merge] Aggregating canonicals (Python; no DuckDB)"
+python ./scripts/skybot/merge_skybot_parts.py --out-root "$OUTROOT"
 echo "[merge] done"
-
-if [[ -n "$SURV_DIR" && -d "$SURV_DIR" ]]; then
-  echo "[counts] Joining flags to survivors under $SURV_DIR"
-  duckdb -batch <<SQL
-    INSTALL parquet; LOAD parquet;
-
-    CREATE OR REPLACE VIEW surv AS
-      SELECT tile_id, NUMBER, CONCAT(tile_id, ':', NUMBER) AS row_id
-      FROM parquet_scan('${SURV_DIR}/ra_bin=*/dec_bin=*/part-*.parquet');
-
-    CREATE OR REPLACE VIEW flags AS
-      SELECT * FROM read_parquet('data/local-cats/_master_optical_parquet_flags/skybot/flags_skybot.parquet');
-
-    SELECT
-      COUNT(*) AS survivors_checked,
-      SUM(CASE WHEN has_skybot_match  THEN 1 ELSE 0 END) AS matched_5as,
-      SUM(CASE WHEN wide_skybot_match THEN 1 ELSE 0 END) AS matched_60as_only
-    FROM surv s LEFT JOIN flags f USING(row_id);
-SQL
-fi
 
 echo "[finish] SkyBoT full run completed at $(date -Is)"
