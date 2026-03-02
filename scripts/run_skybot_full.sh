@@ -7,7 +7,7 @@ CHUNK_DIR="${CHUNK_DIR:-work/scos_chunks}"
 OUTROOT="${OUTROOT:-work/scos_chunks/skybot}"
 LOGDIR="${LOGDIR:-./logs}"
 
-FIELD_ARCMIN="${FIELD_ARCMIN:-22}"
+FIELD_ARCMIN="${FIELD_ARCMIN:-30}"
 MATCH_ARCSEC="${MATCH_ARCSEC:-5}"
 WIDE_ARCSEC="${WIDE_ARCSEC:-60}"
 
@@ -64,10 +64,9 @@ process_one() {
     --tile-to-plate "$TILE2PLATE" \
     --plate-epoch "$PLATEEPOCH" \
     --out-root "$OUTROOT" \
-    --field-radius-arcmin "$FIELD_ARCMIN" \
+    --query-radius-arcmin "$FIELD_ARCMIN" \
     --match-arcsec "$MATCH_ARCSEC" --fallback-wide-arcsec "$WIDE_ARCSEC" \
     --connect-timeout "$CTO" --read-timeout "$RTO" --max-retries "$RETRIES" \
-    --workers 1 \
     --fallback-per-row "$FB_PER_ROW" --fallback-per-row-cap "$FB_CAP"
 
   rm -f "$lock"
