@@ -2,41 +2,45 @@
 # -*- coding: utf-8 -*-
 """
 build_run_stage_csvs.py
+
 Create run-scoped CSV artifacts for Post-pipeline “shrinking set” fetchers.
 
 Outputs (under ./work/runs/run-<date>/ by default):
- - source_extractor_final_filtered.csv (master S1, canonical schema + annotations)
- - source_extractor_final_filtered__dedup.csv (derived; dedup across tiles)
+ - source_extractor_final_filtered.csv            (master S1, canonical schema + annotations)
+ - source_extractor_final_filtered__dedup.csv     (derived; *astronomical* dedup across tiles)
  - source_extractor_final_filtered__edge_core.csv (derived; dedup + edge-core only)
- - tile_manifest.csv (per-tile accounting + PS1 + plate-edge + plate_id)
- - stage_S1.csv (FINAL stage CSV; driven from edge-core set by default)
- - upload_positional.csv (FINAL: src_id,ra,dec) and chunked variants (<=chunk-size)
- - upload_skybot.csv (FINAL: src_id,ra,dec,epoch_mjd) and chunked variants (epoch optional)
+ - source_extractor_final_filtered__edge_noncore.csv (derived; dedup + non-core only)
+ - tile_manifest.csv                              (per-tile accounting + PS1 + plate-edge + plate_id)
+ - stage_S1.csv                                   (FINAL stage CSV; driven from edge-core set)
+ - upload_positional.csv                          (FINAL: src_id,ra,dec) + chunked variants (<=chunk-size)
 
 Optional debug/audit (kept alongside finals):
  - stage_S1__raw.csv
  - upload_positional__raw.csv (+ chunks)
- - upload_skybot__raw.csv (+ chunks)
 
 Contract (canonical schema):
- src_id = tile_id + ":" + object_id
- tile_id = tile folder name (tile-RA...-DEC...)
+ src_id   = tile_id + ":" + object_id
+ tile_id  = tile folder name (tile-RA...-DEC...)
  object_id = internal NUMBER renamed (never emit NUMBER/number in upload CSVs)
- ra/dec = prefer WCS-fixed coords when present; else fallbacks
+ ra/dec   = prefer WCS-fixed coords when present; else fallbacks
 
-Edge policy (per CSV contract):
+Edge policy:
  is_core = (edge_class_px == 'core') OR (edge_class_arcsec == 'core')
- The edge cut is applied only in the derived edge_core set.
+ Edge cut is applied only in derived edge_core set.
 
-Dedup policy:
- Default dedup uses rounded (plate_id, ra, dec) key across tiles
- and prefers a core tile representative when collisions occur.
+Dedup policy (science-grade; WCSFIX-ready):
+ Duplicates are defined per plate_id (REGION) by true angular separation:
+   sep_arcsec(ra,dec) <= dedup_tol_arcsec
+ Implementation uses robust spatial hashing in unit-sphere XYZ coordinates
+ (avoids RA wrap/pole issues). No rounding/grid dedupe.
+ Deterministic representative selection per duplicate cluster:
+   prefer edge-core; tie-break by src_id (lexicographic).
 """
 
 import argparse
 import csv
 import datetime as _dt
-import glob
+import math
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
@@ -126,6 +130,7 @@ def load_edge_report(csv_path: Path) -> Dict[str, dict]:
     csv_path = Path(csv_path)
     if not csv_path.exists():
         return {}
+
     out: Dict[str, dict] = {}
     with csv_path.open("r", encoding="utf-8", errors="ignore", newline="") as f:
         r = csv.DictReader(f)
@@ -179,7 +184,6 @@ def pick_radec_cols(cols: List[str]) -> Optional[Tuple[str, str]]:
     dec = next((c for c in _DEC_CANDS if c in colset), None)
     if ra and dec:
         return ra, dec
-
     for a, b in [("ra", "dec"), ("RA_ICRS", "DE_ICRS")]:
         if a in colset and b in colset:
             return a, b
@@ -205,7 +209,6 @@ def write_chunks(rows: List[dict], out_path: Path, fieldnames: List[str], chunk_
         w.writeheader()
         w.writerows(rows)
 
-    # chunk files
     chunks = []
     if len(rows) <= chunk_size:
         return chunks
@@ -219,7 +222,6 @@ def write_chunks(rows: List[dict], out_path: Path, fieldnames: List[str], chunk_
             w.writeheader()
             w.writerows(chunk)
         chunks.append(chunk_path)
-
     return chunks
 
 
@@ -231,39 +233,146 @@ def is_edge_core(row: dict) -> bool:
     return (row.get("edge_class_px") == "core") or (row.get("edge_class_arcsec") == "core")
 
 
-def dedup_rows_by_plate_radec_round(rows: List[dict], ndigits: int) -> Tuple[List[dict], int]:
-    """
-    Dedup across tiles by rounded (plate_id, ra, dec) key.
-    Prefer edge-core representative when collisions occur.
-    Returns (deduped_rows, dropped_count).
-    """
-    best: Dict[Tuple[str, float, float], dict] = {}
-    dropped = 0
+def angsep_arcsec(ra1_deg: float, dec1_deg: float, ra2_deg: float, dec2_deg: float) -> float:
+    """Great-circle separation in arcsec (haversine; stable for tiny angles)."""
+    ra1 = math.radians(ra1_deg % 360.0)
+    ra2 = math.radians(ra2_deg % 360.0)
+    dec1 = math.radians(dec1_deg)
+    dec2 = math.radians(dec2_deg)
+    dra = ra2 - ra1
+    ddec = dec2 - dec1
+    s1 = math.sin(ddec / 2.0)
+    s2 = math.sin(dra / 2.0)
+    a = s1 * s1 + math.cos(dec1) * math.cos(dec2) * s2 * s2
+    a = min(1.0, max(0.0, a))
+    c = 2.0 * math.asin(math.sqrt(a))
+    return math.degrees(c) * 3600.0
 
-    for r in rows:
+
+def radec_to_unit_xyz(ra_deg: float, dec_deg: float) -> Tuple[float, float, float]:
+    """RA/Dec (deg) -> unit sphere XYZ."""
+    ra = math.radians(ra_deg % 360.0)
+    dec = math.radians(dec_deg)
+    cosd = math.cos(dec)
+    x = cosd * math.cos(ra)
+    y = cosd * math.sin(ra)
+    z = math.sin(dec)
+    return x, y, z
+
+
+def tol_arcsec_to_chord(tol_arcsec: float) -> float:
+    """Angular tolerance -> chord length on unit sphere."""
+    tol_rad = (tol_arcsec / 3600.0) * (math.pi / 180.0)
+    return 2.0 * math.sin(tol_rad / 2.0)
+
+
+class UnionFind:
+    def __init__(self, n: int):
+        self.p = list(range(n))
+        self.rank = [0] * n
+
+    def find(self, a: int) -> int:
+        while self.p[a] != a:
+            self.p[a] = self.p[self.p[a]]
+            a = self.p[a]
+        return a
+
+    def union(self, a: int, b: int):
+        ra = self.find(a)
+        rb = self.find(b)
+        if ra == rb:
+            return
+        if self.rank[ra] < self.rank[rb]:
+            self.p[ra] = rb
+        elif self.rank[ra] > self.rank[rb]:
+            self.p[rb] = ra
+        else:
+            self.p[rb] = ra
+            self.rank[ra] += 1
+
+
+def dedup_rows_by_plate_radius_xyz(rows: List[dict], tol_arcsec: float) -> Tuple[List[dict], int]:
+    """
+    Science-grade dedup per plate by angular separation <= tol_arcsec.
+    Robust neighbor search uses XYZ unit-sphere binning (3D spatial hash).
+    Representative selection is deterministic:
+      prefer edge-core; tie-break by src_id (lexicographic).
+    Output ordering follows original input order of the chosen representatives.
+    """
+    if not rows:
+        return rows, 0
+    tol_arcsec = float(tol_arcsec)
+    if tol_arcsec <= 0:
+        return rows, 0
+
+    cell = tol_arcsec_to_chord(tol_arcsec)
+    if cell <= 0:
+        return rows, 0
+
+    # Group indices by plate_id
+    by_plate: Dict[str, List[int]] = {}
+    for i, r in enumerate(rows):
         plate = str(r.get("plate_id") or "")
-        ra = float(r["ra"])
-        dec = float(r["dec"])
-        key = (plate, round(ra, ndigits), round(dec, ndigits))
+        by_plate.setdefault(plate, []).append(i)
 
-        if key not in best:
-            best[key] = r
+    chosen_indices: Set[int] = set()
+
+    for plate, idxs in by_plate.items():
+        if len(idxs) <= 1:
+            chosen_indices.update(idxs)
             continue
 
-        # collision: prefer edge-core over non-core
-        cur = best[key]
-        cur_core = is_edge_core(cur)
-        new_core = is_edge_core(r)
+        # Local arrays for this plate
+        local_rows = [rows[i] for i in idxs]
+        xyz = [radec_to_unit_xyz(float(r["ra"]), float(r["dec"])) for r in local_rows]
 
-        if (not cur_core) and new_core:
-            best[key] = r
-            dropped += 1
-        else:
-            dropped += 1
+        def key(x: float, y: float, z: float) -> Tuple[int, int, int]:
+            return int(x / cell), int(y / cell), int(z / cell)
 
-    # keep stable-ish order by re-walking original and selecting chosen rows
-    chosen_ids = set(id(v) for v in best.values())
-    out = [r for r in rows if id(r) in chosen_ids]
+        bins: Dict[Tuple[int, int, int], List[int]] = {}
+        uf = UnionFind(len(local_rows))
+
+        # Insert incrementally; union with prior candidates in neighbor bins
+        for li, r in enumerate(local_rows):
+            x, y, z = xyz[li]
+            ix, iy, iz = key(x, y, z)
+
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for dz in (-1, 0, 1):
+                        cand = bins.get((ix + dx, iy + dy, iz + dz))
+                        if not cand:
+                            continue
+                        for lj in cand:
+                            rj = local_rows[lj]
+                            if angsep_arcsec(float(r["ra"]), float(r["dec"]), float(rj["ra"]), float(rj["dec"])) <= tol_arcsec:
+                                uf.union(li, lj)
+
+            bins.setdefault((ix, iy, iz), []).append(li)
+
+        # Build components
+        comps: Dict[int, List[int]] = {}
+        for li in range(len(local_rows)):
+            root = uf.find(li)
+            comps.setdefault(root, []).append(li)
+
+        # Choose representative per component deterministically
+        for members in comps.values():
+            if len(members) == 1:
+                chosen_indices.add(idxs[members[0]])
+                continue
+
+            def rep_key(li: int) -> Tuple[int, str]:
+                rr = local_rows[li]
+                # prefer core (0) over non-core (1), then lexicographic src_id
+                return (0 if is_edge_core(rr) else 1, str(rr.get("src_id") or ""))
+
+            rep_li = min(members, key=rep_key)
+            chosen_indices.add(idxs[rep_li])
+
+    # Preserve original order
+    out = [rows[i] for i in range(len(rows)) if i in chosen_indices]
+    dropped = len(rows) - len(out)
     return out, dropped
 
 
@@ -288,13 +397,18 @@ def main():
     ap.add_argument("--catalog-name", default="catalogs/sextractor_pass2.filtered.csv",
                     help="Relative path under tile dir to read survivors from.")
 
-    # Derived sets controls
-    ap.add_argument("--dedup-enable", action="store_true",
-                    help="Enable dedup across tiles (derived __dedup + __edge_core sets).")
+    # Dedup controls (dedup ON by default)
+    ap.add_argument("--dedup-tol-arcsec", type=float, default=0.25,
+                    help="Astronomical dedup tolerance in arcsec (default 0.25).")
+    ap.add_argument("--no-dedup", dest="dedup_enable", action="store_false", default=True,
+                    help="Disable astronomical dedup (not recommended).")
+    # Back-compat: previous arg existed but is no longer used
     ap.add_argument("--dedup-round-digits", type=int, default=6,
-                    help="Dedup rounding digits for ra/dec degrees (default 6 ~ 0.36 arcsec).")
+                    help="(deprecated/ignored) old rounding-based dedup parameter; no longer used.")
+
     ap.add_argument("--write-raw-stage-and-uploads", action="store_true",
                     help="Also write stage/uploads for the raw (non-dedup, non-edge-cut) set.")
+
     args = ap.parse_args()
 
     # run folder
@@ -318,12 +432,11 @@ def main():
     # manifest rows + base S1 rows
     manifest_rows: List[dict] = []
     out_rows: List[dict] = []  # base S1 rows (PS1 allowlist applied)
-
     tiles = list(iter_tile_dirs(Path(args.tiles_root)))
 
     # de-dup tile dirs by tile_id to avoid double walks if both flat+sharded yield same
     seen_tile_ids = set()
-    uniq_tiles = []
+    uniq_tiles: List[Path] = []
     for td in tiles:
         if td.name.startswith("tile-RA") and td.name not in seen_tile_ids:
             seen_tile_ids.add(td.name)
@@ -332,7 +445,6 @@ def main():
     # helper: decide if tile is PS1-eligible
     def is_ps1_eligible(td: Path) -> bool:
         if not eligible_set:
-            # if no list is provided, default to include all
             return True
         return str(td) in eligible_set
 
@@ -341,8 +453,8 @@ def main():
         tile_id = td.name
         tile_path_str = str(td)
         ps1_ok = is_ps1_eligible(td)
-
         cat_path = td / args.catalog_name
+
         n_in = 0
         n_out = 0
         note = ""
@@ -356,28 +468,23 @@ def main():
             cols = detect_header_cols(cat_path)
             radec = pick_radec_cols(cols)
             objcol = pick_object_id_col(cols)
-
             if not radec:
                 note = "missing RA/Dec columns"
             elif not objcol:
                 note = "missing object id column (NUMBER)"
             else:
                 ra_col, dec_col = radec
-
                 with cat_path.open("r", encoding="utf-8", errors="ignore", newline="") as f:
                     dr = csv.DictReader(f)
                     for row in dr:
                         n_in += 1
-
                         if not ps1_ok:
                             continue
-
                         try:
                             obj_raw = row.get(objcol, "")
                             object_id = int(float(obj_raw))  # tolerate "1234.0"
                         except Exception:
                             continue
-
                         try:
                             ra = float(row.get(ra_col, "nan"))
                             dec = float(row.get(dec_col, "nan"))
@@ -437,11 +544,11 @@ def main():
         seen.add(sid)
         base_rows.append(r)
 
-    # derived sets
+    # derived sets: astronomical dedup
     dedup_rows = base_rows
     dedup_dropped = 0
     if args.dedup_enable:
-        dedup_rows, dedup_dropped = dedup_rows_by_plate_radec_round(base_rows, args.dedup_round_digits)
+        dedup_rows, dedup_dropped = dedup_rows_by_plate_radius_xyz(base_rows, args.dedup_tol_arcsec)
 
     edge_core_rows = [r for r in dedup_rows if is_edge_core(r)]
     edge_noncore_rows = [r for r in dedup_rows if not is_edge_core(r)]
@@ -485,18 +592,13 @@ def main():
         for r in final_rows:
             w.writerow({k: r[k] for k in stage_fields})
 
-    # upload views (FINAL)
+    # upload views (FINAL) — positional only
     upload_pos_fields = ["src_id", "ra", "dec"]
     upload_pos_rows = [{k: r[k] for k in upload_pos_fields} for r in final_rows]
     upload_pos_path = run_dir / "upload_positional.csv"
     write_chunks(upload_pos_rows, upload_pos_path, upload_pos_fields, args.chunk_size, "upload_positional_chunk")
 
-    upload_sky_fields = ["src_id", "ra", "dec", "epoch_mjd"]
-    upload_sky_rows = [{"src_id": r["src_id"], "ra": r["ra"], "dec": r["dec"], "epoch_mjd": ""} for r in final_rows]
-    upload_sky_path = run_dir / "upload_skybot.csv"
-    write_chunks(upload_sky_rows, upload_sky_path, upload_sky_fields, args.chunk_size, "upload_skybot_chunk")
-
-    # optional raw stage/uploads
+    # optional raw stage/uploads (positional only)
     if args.write_raw_stage_and_uploads:
         stage_raw_path = run_dir / "stage_S1__raw.csv"
         with stage_raw_path.open("w", encoding="utf-8", newline="") as f:
@@ -508,10 +610,6 @@ def main():
         upload_pos_raw_path = run_dir / "upload_positional__raw.csv"
         upload_pos_raw_rows = [{k: r[k] for k in upload_pos_fields} for r in base_rows]
         write_chunks(upload_pos_raw_rows, upload_pos_raw_path, upload_pos_fields, args.chunk_size, "upload_positional__raw_chunk")
-
-        upload_sky_raw_path = run_dir / "upload_skybot__raw.csv"
-        upload_sky_raw_rows = [{"src_id": r["src_id"], "ra": r["ra"], "dec": r["dec"], "epoch_mjd": ""} for r in base_rows]
-        write_chunks(upload_sky_raw_rows, upload_sky_raw_path, upload_sky_fields, args.chunk_size, "upload_skybot__raw_chunk")
 
     # summary
     summary = run_dir / "RUN_SUMMARY.txt"
@@ -525,9 +623,9 @@ def main():
             f"S1_src_id_duplicates_dropped: {dup_srcid_dropped}",
             f"ps1_eligible_list_present: {bool(eligible_set)}",
             f"ps1_excluded_list_present: {bool(excluded_set)}",
-            f"edge_cut_policy: derived edge_core only (is_core = class_px=='core' OR class_arcsec=='core')",
+            "edge_cut_policy: derived edge_core only (is_core = class_px=='core' OR class_arcsec=='core')",
             f"dedup_enabled: {bool(args.dedup_enable)}",
-            f"dedup_method: plate_id + rounded(ra,dec) with ndigits={args.dedup_round_digits}",
+            f"dedup_method: plate_id + angular_sep <= {args.dedup_tol_arcsec:.3f}\" (XYZ spatial hash; deterministic rep: core then src_id)",
             f"dedup_rows: {len(dedup_rows)} (dropped={dedup_dropped})",
             f"edge_core_rows: {len(edge_core_rows)}",
             f"edge_noncore_rows: {len(edge_noncore_rows)}",
@@ -539,7 +637,7 @@ def main():
             f"master_edge_core_csv: {master_edge_core_path.name}",
             f"stage_csv: {stage_path.name}",
             f"upload_positional: {upload_pos_path.name}",
-            f"upload_skybot: {upload_sky_path.name} (epoch_mjd blank; fill via epoch stage later)",
+            "upload_skybot: (disabled) not produced by this script",
         ]) + "\n",
         encoding="utf-8"
     )
