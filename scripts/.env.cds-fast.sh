@@ -11,4 +11,4 @@ export VASCO_CDS_GAIA_TABLE="I/355/gaiadr3"
 export VASCO_CDS_PS1_TABLE="II/389/ps1_dr2"
 export VASCO_SPIKES_ENGINE=vectorized
 export VASCO_SPIKES_DEBUG=1
-
+export VASCO_DISABLE_USNOB=1
