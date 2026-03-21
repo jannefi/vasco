@@ -1,6 +1,12 @@
 
 # VASCO — plate-aware POSS‑I pipeline (research / evolving)
 
+## Successor project
+
+**[VASCO60](https://github.com/jannefi/vasco60)** is the current active development. It is a ground-up rewrite with a deterministic tessellation plan, improved provenance, and a cleaner post-pipeline veto chain. New work happens there.
+
+---
+
 ## Project status / scope (Feb 2026)
 
 This repository is **no longer maintained with the goal of reproducing the results or dataset(s) reported in MNRAS 515(1):1380 (2022)**.
